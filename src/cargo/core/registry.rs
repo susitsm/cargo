@@ -716,10 +716,45 @@ https://doc.rust-lang.org/cargo/reference/overriding-dependencies.html
             sources.insert(dep.source_id());
         }
 
-        for source_id in sources {
-            self.ensure_loaded_without_blocking(source_id, Kind::Normal)?;
+        for source_id in &sources {
+            self.ensure_loaded_without_blocking(*source_id, Kind::Normal)?;
         }
-        self.block_until_ready()
+        self.block_until_sources_ready(sources);
+        Ok(())
+    }
+
+    #[tracing::instrument(skip_all)]
+    fn block_until_sources_ready(&mut self, source_ids: IndexSet<SourceId>) -> CargoResult<()> {
+        if cfg!(debug_assertions) {
+            // Force borrow to catch invalid borrows, regardless of which source is used and how it
+            // happens to behave this time
+            self.gctx.shell().verbosity();
+        }
+        let fetchers: Vec<_> = source_ids
+            .iter()
+            .filter_map(|id| Some((*id, self.sources.get(*id).unwrap().fetcher()?)))
+            .collect();
+        use rayon::iter::{IntoParallelIterator, ParallelIterator};
+        let results: Vec<_> = fetchers
+            .into_par_iter()
+            .map(|(id, fetcher)| (id, fetcher.fetch()))
+            .collect();
+        for (id, res) in results.iter() {
+            if res.is_ok() {
+                self.sources.get_mut(*id).unwrap().fetch_done()?;
+            }
+        }
+        let mut fetched_ids = Vec::with_capacity(results.len());
+        for (id, res) in results {
+            fetched_ids.push(id);
+            res?;
+        }
+        for source_id in fetched_ids {
+            self.sources.get_mut(source_id).unwrap()
+                .block_until_ready()
+                .with_context(|| format!("Unable to update {}", source_id))?;
+        }
+        Ok(())
     }
 }
 
@@ -879,24 +914,6 @@ impl<'gctx> Registry for PackageRegistry<'gctx> {
             // Force borrow to catch invalid borrows, regardless of which source is used and how it
             // happens to behave this time
             self.gctx.shell().verbosity();
-        }
-        let sources_ids = self.sources.sources_ids().copied().collect::<Vec<_>>();
-        let fetchers: Vec<_> = sources_ids
-            .iter()
-            .filter_map(|id| self.sources.get(*id).unwrap().fetcher())
-            .collect();
-        use rayon::iter::{IntoParallelIterator, ParallelIterator};
-        let results: Vec<_> = fetchers
-            .into_par_iter()
-            .map(|fetcher| fetcher.fetch())
-            .collect();
-        for (res, id) in results.iter().zip(sources_ids.iter()) {
-            if res.is_ok() {
-                self.sources.get_mut(*id).unwrap().fetch_done();
-            }
-        }
-        for res in results {
-            res?;
         }
         for (source_id, source) in self.sources.sources_mut() {
             source
