@@ -1,7 +1,7 @@
 use super::{GlobalContext, StringList, Value};
 use regex::Regex;
 use serde::{Deserialize, de::Error};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Use with the `get` API to fetch a string that will be converted to a
 /// `PathBuf`. Relative paths are converted to absolute paths based on the
@@ -31,6 +31,14 @@ impl ConfigRelativePath {
     /// location for configuration for this value.
     pub fn resolve_path(&self, gctx: &GlobalContext) -> PathBuf {
         self.0.definition.root(gctx).join(&self.0.val)
+    }
+
+    /// Resolves this configuration-relative path to an absolute path.
+    ///
+    /// This will always return an absolute path where it's relative to the
+    /// location for configuration for this value.
+    pub fn resolve_path_cwd(&self, cwd: &Path) -> PathBuf {
+        self.0.definition.root_cwd(cwd).join(&self.0.val)
     }
 
     /// Same as [`Self::resolve_path`] but will make string replacements

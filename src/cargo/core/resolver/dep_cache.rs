@@ -25,6 +25,7 @@ use crate::util::errors::CargoResult;
 use crate::util::interning::{INTERNED_DEFAULT, InternedString};
 
 use anyhow::Context as _;
+use indexmap::IndexSet;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fmt::Write;
 use std::rc::Rc;
@@ -89,6 +90,19 @@ impl<'a> RegistryQueryer<'a> {
 
     pub fn replacement_summary(&self, p: PackageId) -> Option<&Summary> {
         self.used_replacements.get(&p)
+    }
+
+    fn query_many(
+        &mut self,
+        args: &[(&Dependency, Option<VersionOrdering>)],
+    ) -> Vec<Poll<CargoResult<Rc<Vec<Summary>>>>> {
+        let registry_cache_keys: IndexSet<_> = args
+            .iter()
+            .cloned()
+            .map(|(dep, first_version)| (dep.clone(), first_version))
+            .collect();
+
+        Vec::new()
     }
 
     /// Queries the `registry` to return a list of candidates for `dep`.
@@ -246,6 +260,8 @@ impl<'a> RegistryQueryer<'a> {
         // Next, transform all dependencies into a list of possible candidates
         // which can satisfy that dependency.
         let mut all_ready = true;
+        let dep_vec = deps.iter().map(|(dep, _)| dep).collect::<Vec<_>>();
+        self.registry.ensure_dep_sources_loaded(&dep_vec);
         let mut deps = deps
             .into_iter()
             .filter_map(|(dep, features)| match self.query(&dep, first_version) {

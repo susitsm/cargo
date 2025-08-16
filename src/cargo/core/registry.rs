@@ -23,6 +23,7 @@ use crate::util::errors::CargoResult;
 use crate::util::interning::InternedString;
 use crate::util::{CanonicalUrl, GlobalContext};
 use anyhow::{Context as _, bail};
+use indexmap::IndexSet;
 use tracing::{debug, trace};
 use url::Url;
 
@@ -36,6 +37,9 @@ use url::Url;
 /// See also the [`Source`] trait, as many of the methods here mirror and
 /// abstract over its functionalities.
 pub trait Registry {
+    fn ensure_dep_sources_loaded(&mut self, deps: &[&Dependency]) -> CargoResult<()> {
+        Ok(())
+    }
     /// Attempt to find the packages that match a dependency request.
     fn query(
         &mut self,
@@ -219,7 +223,11 @@ impl<'gctx> PackageRegistry<'gctx> {
 
     /// Ensures the [`Source`] of the given [`SourceId`] is loaded.
     /// If not, this will block until the source is ready.
-    fn ensure_loaded(&mut self, namespace: SourceId, kind: Kind) -> CargoResult<()> {
+    fn ensure_loaded_without_blocking(
+        &mut self,
+        namespace: SourceId,
+        kind: Kind,
+    ) -> CargoResult<()> {
         match self.source_ids.get(&namespace) {
             // We've previously loaded this source, and we've already locked it,
             // so we're not allowed to change it even if `namespace` has a
@@ -252,7 +260,15 @@ impl<'gctx> PackageRegistry<'gctx> {
         }
 
         self.load(namespace, kind)?;
+        Ok(())
+    }
 
+    /// Ensures the [`Source`] of the given [`SourceId`] is loaded.
+    /// If not, this will block until the source is ready.
+    fn ensure_loaded(&mut self, namespace: SourceId, kind: Kind) -> CargoResult<()> {
+        self.ensure_loaded_without_blocking(namespace, kind)?;
+
+        debug!("Ensure loaded {}", namespace);
         // This isn't strictly necessary since it will be called later.
         // However it improves error messages for sources that issue errors
         // in `block_until_ready` because the callers here have context about
@@ -637,9 +653,80 @@ https://doc.rust-lang.org/cargo/reference/overriding-dependencies.html
 
         Ok(())
     }
+
+    fn ensure_dep_sources_loaded<'a>(
+        &mut self,
+        deps: impl IntoIterator<Item = &'a Dependency>,
+    ) -> CargoResult<()> {
+        println!("Dep sources being loaded!");
+        let mut sources = IndexSet::<SourceId>::default();
+        for dep in deps {
+            // Look for an override and get ready to query the real source.
+            let override_summary = match self.query_overrides(dep) {
+                Poll::Ready(v) => v?,
+                Poll::Pending => continue,
+            };
+
+            // Next up on our list of candidates is to check the `[patch]` section
+            // of the manifest. Here we look through all patches relevant to the
+            // source that `dep` points to, and then we match name/version. Note
+            // that we don't use `dep.matches(..)` because the patches, by definition,
+            // come from a different source. This means that `dep.matches(..)` will
+            // always return false, when what we really care about is the name/version match.
+            let mut patches = Vec::<Summary>::new();
+            if let Some(extra) = self.patches.get(dep.source_id().canonical_url()) {
+                patches.extend(
+                    extra
+                        .iter()
+                        .filter(|s| dep.matches_ignoring_source(s.package_id()))
+                        .cloned(),
+                );
+            }
+
+            // A crucial feature of the `[patch]` feature is that we don't query the
+            // actual registry if we have a "locked" dependency. A locked dep basically
+            // just means a version constraint of `=a.b.c`, and because patches take
+            // priority over the actual source then if we have a candidate we're done.
+            if patches.len() == 1 && dep.is_locked() {
+                let patch = patches.remove(0);
+                match override_summary {
+                    Some(override_summary) => {
+                        self.warn_bad_override(override_summary.as_summary(), &patch)?;
+                        let override_summary =
+                            override_summary.map_summary(|summary| self.lock(summary));
+                    }
+                    None => (),
+                }
+
+                continue;
+            }
+
+            if !patches.is_empty() {
+                debug!(
+                    "found {} patches with an unlocked dep on `{}` at {} \
+                         with `{}`, \
+                         looking at sources",
+                    patches.len(),
+                    dep.package_name(),
+                    dep.source_id(),
+                    dep.version_req()
+                );
+            }
+
+            sources.insert(dep.source_id());
+        }
+
+        for source_id in sources {
+            self.ensure_loaded_without_blocking(source_id, Kind::Normal)?;
+        }
+        self.block_until_ready()
+    }
 }
 
 impl<'gctx> Registry for PackageRegistry<'gctx> {
+    fn ensure_dep_sources_loaded(&mut self, deps: &[&Dependency]) -> CargoResult<()> {
+        self.ensure_dep_sources_loaded(deps.iter().map(|dep| *dep))
+    }
     fn query(
         &mut self,
         dep: &Dependency,
@@ -792,6 +879,24 @@ impl<'gctx> Registry for PackageRegistry<'gctx> {
             // Force borrow to catch invalid borrows, regardless of which source is used and how it
             // happens to behave this time
             self.gctx.shell().verbosity();
+        }
+        let sources_ids = self.sources.sources_ids().copied().collect::<Vec<_>>();
+        let fetchers: Vec<_> = sources_ids
+            .iter()
+            .map(|id| self.sources.get(*id).unwrap().fetcher())
+            .collect();
+        use rayon::iter::{IntoParallelIterator, ParallelIterator};
+        let results: Vec<_> = fetchers
+            .into_par_iter()
+            .map(|fetcher| fetcher.fetch())
+            .collect();
+        for (res, id) in results.iter().zip(sources_ids.iter()) {
+            if res.is_ok() {
+                self.sources.get_mut(*id).unwrap().fetch_done();
+            }
+        }
+        for res in results {
+            res?;
         }
         for (source_id, source) in self.sources.sources_mut() {
             source

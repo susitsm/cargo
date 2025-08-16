@@ -88,9 +88,17 @@ impl Definition {
     /// If from a file, it is the directory above `.cargo/config`.
     /// CLI and env are the current working directory.
     pub fn root<'a>(&'a self, gctx: &'a GlobalContext) -> &'a Path {
+        self.root_cwd(gctx.cwd())
+    }
+
+    /// Root directory where this is defined.
+    ///
+    /// If from a file, it is the directory above `.cargo/config`.
+    /// CLI and env are the current working directory.
+    pub fn root_cwd<'a>(&'a self, cwd: &'a Path) -> &'a Path {
         match self {
             Definition::Path(p) | Definition::Cli(Some(p)) => p.parent().unwrap().parent().unwrap(),
-            Definition::Environment(_) | Definition::Cli(None) => gctx.cwd(),
+            Definition::Environment(_) | Definition::Cli(None) => cwd,
         }
     }
 

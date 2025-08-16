@@ -63,7 +63,7 @@ use std::io::prelude::*;
 use std::mem;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
-use std::sync::{Arc, Once};
+use std::sync::{Arc, Once, RwLock, RwLockWriteGuard};
 use std::time::Instant;
 
 use self::ConfigValue as CV;
@@ -85,7 +85,7 @@ use cargo_util::paths;
 use cargo_util_schemas::manifest::RegistryName;
 use curl::easy::Easy;
 use itertools::Itertools;
-use lazycell::LazyCell;
+use lazycell::{AtomicLazyCell, LazyCell};
 use serde::Deserialize;
 use serde::de::IntoDeserializer as _;
 use serde_untagged::UntaggedEnumVisitor;
@@ -159,6 +159,206 @@ pub struct CredentialCacheValue {
     pub operation_independent: bool,
 }
 
+#[derive(Clone, Copy)]
+pub struct GlobalContextSync<'gctx> {
+    home_path: &'gctx Filesystem,
+    shell: &'gctx RwLock<Shell>,
+    cli_config: &'gctx Option<Vec<String>>,
+    cwd: &'gctx PathBuf,
+    search_stop_path: &'gctx Option<PathBuf>,
+    extra_verbose: bool,
+    frozen: bool,
+    locked: bool,
+    offline: bool,
+    jobserver: &'gctx Option<jobserver::Client>,
+    unstable_flags: &'gctx CliUnstable,
+    unstable_flags_cli: &'gctx Option<Vec<String>>,
+    cache_rustc_info: bool,
+    creation_time: &'gctx Instant,
+    target_dir: &'gctx Option<Filesystem>,
+    progress_config: &'gctx ProgressConfig,
+    env: &'gctx Env,
+    nightly_features_allowed: bool,
+    net_config: &'gctx AtomicLazyCell<CargoNetConfig>,
+    http_config: &'gctx AtomicLazyCell<CargoHttpConfig>,
+}
+
+fn try_borrow_with<T, E, F>(this: &AtomicLazyCell<T>, f: F) -> Result<&T, E>
+where
+    F: FnOnce() -> Result<T, E>,
+{
+    if let Some(value) = this.borrow() {
+        return Ok(value);
+    }
+    let value = f()?;
+    if this.fill(value).is_err() {
+        panic!("try_borrow_with: cell was filled by closure")
+    }
+    Ok(this.borrow().unwrap())
+}
+
+impl<'gctx> GlobalContextSync<'gctx> {
+    /// Gets a reference to the shell, e.g., for writing error messages.
+    pub fn shell(&self) -> RwLockWriteGuard<'_, Shell> {
+        self.shell.write().unwrap()
+    }
+
+    /// Get the value of environment variable `key` through the snapshot in
+    /// [`GlobalContext`].
+    ///
+    /// This can be used similarly to [`std::env::var`].
+    pub fn get_env(&self, key: impl AsRef<OsStr>) -> CargoResult<&str> {
+        self.env.get_env(key)
+    }
+
+    /// Get the value of environment variable `key` through the snapshot in
+    /// [`GlobalContext`].
+    ///
+    /// This can be used similarly to [`std::env::var_os`].
+    pub fn get_env_os(&self, key: impl AsRef<OsStr>) -> Option<&OsStr> {
+        self.env.get_env_os(key)
+    }
+
+    pub fn net_config(&self) -> CargoResult<&CargoNetConfig> {
+        Ok(self.net_config.borrow().unwrap())
+    }
+
+    pub fn network_allowed(&self) -> bool {
+        !self.offline_flag().is_some()
+    }
+
+    pub fn offline_flag(&self) -> Option<&'static str> {
+        if self.frozen {
+            Some("--frozen")
+        } else if self.offline {
+            Some("--offline")
+        } else {
+            None
+        }
+    }
+
+    pub fn cli_unstable(&self) -> &CliUnstable {
+        &self.unstable_flags
+    }
+
+    /// Gets the Cargo Git directory (`<cargo_home>/git`).
+    pub fn git_path(&self) -> Filesystem {
+        self.home_path.join("git")
+    }
+
+    /// Gets the directory of code sources Cargo checkouts from Git bare repos
+    /// (`<cargo_home>/git/checkouts`).
+    pub fn git_checkouts_path(&self) -> Filesystem {
+        self.git_path().join("checkouts")
+    }
+
+    /// Gets the directory for all Git bare repos Cargo clones
+    /// (`<cargo_home>/git/db`).
+    pub fn git_db_path(&self) -> Filesystem {
+        self.git_path().join("db")
+    }
+
+    pub fn progress_config(&self) -> &'gctx ProgressConfig {
+        self.progress_config
+    }
+
+    pub fn diagnostic_home_config(&self) -> String {
+        let home = self.home_path.as_path_unlocked();
+        let path = match self.get_file_path(home, "config", false) {
+            Ok(Some(existing_path)) => existing_path,
+            _ => home.join("config.toml"),
+        };
+        path.to_string_lossy().to_string()
+    }
+
+    fn get_file_path(
+        &self,
+        dir: &Path,
+        filename_without_extension: &str,
+        warn: bool,
+    ) -> CargoResult<Option<PathBuf>> {
+        let possible = dir.join(filename_without_extension);
+        let possible_with_extension = dir.join(format!("{}.toml", filename_without_extension));
+
+        if let Ok(possible_handle) = same_file::Handle::from_path(&possible) {
+            if warn {
+                if let Ok(possible_with_extension_handle) =
+                    same_file::Handle::from_path(&possible_with_extension)
+                {
+                    // We don't want to print a warning if the version
+                    // without the extension is just a symlink to the version
+                    // WITH an extension, which people may want to do to
+                    // support multiple Cargo versions at once and not
+                    // get a warning.
+                    if possible_handle != possible_with_extension_handle {
+                        self.shell().warn(format!(
+                            "both `{}` and `{}` exist. Using `{}`",
+                            possible.display(),
+                            possible_with_extension.display(),
+                            possible.display()
+                        ))?;
+                    }
+                } else {
+                    self.shell().warn(format!(
+                        "`{}` is deprecated in favor of `{filename_without_extension}.toml`",
+                        possible.display(),
+                    ))?;
+                    self.shell().note(
+                        format!("if you need to support cargo 1.38 or earlier, you can symlink `{filename_without_extension}` to `{filename_without_extension}.toml`"),
+                    )?;
+                }
+            }
+
+            Ok(Some(possible))
+        } else if possible_with_extension.exists() {
+            Ok(Some(possible_with_extension))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub fn http_config(&self) -> CargoResult<&CargoHttpConfig> {
+        Ok(self.http_config.borrow().unwrap())
+    }
+
+    pub fn cwd(&self) -> &'gctx Path {
+        &self.cwd
+    }
+
+    /*
+    pub fn http(&self) -> CargoResult<&RwLock<Easy>> {
+        todo!()
+    }
+    */
+}
+
+impl GlobalContext {
+    pub fn sync(&self) -> GlobalContextSync<'_> {
+        GlobalContextSync {
+            home_path: &self.home_path,
+            shell: &self.shell,
+            cli_config: &self.cli_config,
+            cwd: &self.cwd,
+            search_stop_path: &self.search_stop_path,
+            extra_verbose: self.extra_verbose,
+            frozen: self.frozen,
+            locked: self.locked,
+            offline: self.offline,
+            jobserver: &self.jobserver,
+            unstable_flags: &self.unstable_flags,
+            unstable_flags_cli: &self.unstable_flags_cli,
+            cache_rustc_info: self.cache_rustc_info,
+            creation_time: &self.creation_time,
+            target_dir: &self.target_dir,
+            env: &self.env,
+            progress_config: &self.progress_config,
+            nightly_features_allowed: self.nightly_features_allowed,
+            net_config: &self.net_config,
+            http_config: &self.http_config,
+        }
+    }
+}
+
 /// Configuration information for cargo. This is not specific to a build, it is information
 /// relating to cargo itself.
 #[derive(Debug)]
@@ -166,7 +366,7 @@ pub struct GlobalContext {
     /// The location of the user's Cargo home directory. OS-dependent.
     home_path: Filesystem,
     /// Information about how to write messages to the shell
-    shell: RefCell<Shell>,
+    shell: RwLock<Shell>,
     /// A collection of configuration options
     values: LazyCell<HashMap<String, ConfigValue>>,
     /// A collection of configuration options from the credentials file
@@ -199,7 +399,7 @@ pub struct GlobalContext {
     /// Cli flags of the form "-Z something"
     unstable_flags_cli: Option<Vec<String>>,
     /// A handle on curl easy mode for http calls
-    easy: LazyCell<RefCell<Easy>>,
+    easy: AtomicLazyCell<RwLock<Easy>>,
     /// Cache of the `SourceId` for crates.io
     crates_io_source_id: LazyCell<SourceId>,
     /// If false, don't cache `rustc --version --verbose` invocations
@@ -220,9 +420,9 @@ pub struct GlobalContext {
     /// Locks on the package and index caches.
     package_cache_lock: CacheLocker,
     /// Cached configuration parsed by Cargo
-    http_config: LazyCell<CargoHttpConfig>,
+    http_config: AtomicLazyCell<CargoHttpConfig>,
     future_incompat_config: LazyCell<CargoFutureIncompatConfig>,
-    net_config: LazyCell<CargoNetConfig>,
+    net_config: AtomicLazyCell<CargoNetConfig>,
     build_config: LazyCell<CargoBuildConfig>,
     target_cfgs: LazyCell<Vec<(String, TargetCfgConfig)>>,
     doc_extern_map: LazyCell<RustdocExternMap>,
@@ -283,7 +483,7 @@ impl GlobalContext {
 
         GlobalContext {
             home_path: Filesystem::new(homedir),
-            shell: RefCell::new(shell),
+            shell: RwLock::new(shell),
             cwd,
             search_stop_path: None,
             values: LazyCell::new(),
@@ -304,7 +504,7 @@ impl GlobalContext {
             },
             unstable_flags: CliUnstable::default(),
             unstable_flags_cli: None,
-            easy: LazyCell::new(),
+            easy: AtomicLazyCell::new(),
             crates_io_source_id: LazyCell::new(),
             cache_rustc_info,
             creation_time: Instant::now(),
@@ -314,9 +514,9 @@ impl GlobalContext {
             credential_cache: LazyCell::new(),
             registry_config: LazyCell::new(),
             package_cache_lock: CacheLocker::new(),
-            http_config: LazyCell::new(),
+            http_config: AtomicLazyCell::new(),
             future_incompat_config: LazyCell::new(),
-            net_config: LazyCell::new(),
+            net_config: AtomicLazyCell::new(),
             build_config: LazyCell::new(),
             target_cfgs: LazyCell::new(),
             doc_extern_map: LazyCell::new(),
@@ -408,8 +608,8 @@ impl GlobalContext {
     }
 
     /// Gets a reference to the shell, e.g., for writing error messages.
-    pub fn shell(&self) -> RefMut<'_, Shell> {
-        self.shell.borrow_mut()
+    pub fn shell(&self) -> RwLockWriteGuard<'_, Shell> {
+        self.shell.write().unwrap()
     }
 
     /// Gets the path to the `rustdoc` executable.
@@ -1886,21 +2086,19 @@ impl GlobalContext {
         self.jobserver.as_ref()
     }
 
-    pub fn http(&self) -> CargoResult<&RefCell<Easy>> {
-        let http = self
-            .easy
-            .try_borrow_with(|| http_handle(self).map(RefCell::new))?;
+    pub fn http(&self) -> CargoResult<&RwLock<Easy>> {
+        let http = try_borrow_with(&self.easy, || http_handle(self.sync()).map(RwLock::new))?;
         {
-            let mut http = http.borrow_mut();
+            let mut http = http.write().unwrap();
             http.reset();
-            let timeout = configure_http_handle(self, &mut http)?;
+            let timeout = configure_http_handle(self.sync(), &mut http)?;
             timeout.configure(&mut http)?;
         }
         Ok(http)
     }
 
     pub fn http_config(&self) -> CargoResult<&CargoHttpConfig> {
-        self.http_config.try_borrow_with(|| {
+        try_borrow_with(&self.http_config, || {
             let mut http = self.get::<CargoHttpConfig>("http")?;
             let curl_v = curl::Version::get();
             disables_multiplexing_for_bad_curl(curl_v.version(), &mut http, self);
@@ -1914,8 +2112,7 @@ impl GlobalContext {
     }
 
     pub fn net_config(&self) -> CargoResult<&CargoNetConfig> {
-        self.net_config
-            .try_borrow_with(|| self.get::<CargoNetConfig>("net"))
+        try_borrow_with(&self.net_config, || self.get::<CargoNetConfig>("net"))
     }
 
     pub fn build_config(&self) -> CargoResult<&CargoBuildConfig> {

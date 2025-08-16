@@ -6,6 +6,7 @@ use crate::sources::git::fetch::RemoteKind;
 use crate::sources::git::oxide;
 use crate::sources::git::oxide::cargo_config_to_gitoxide_overrides;
 use crate::util::HumanBytes;
+use crate::util::context::GlobalContextSync;
 use crate::util::errors::CargoResult;
 use crate::util::{GlobalContext, IntoUrl, MetricsCounter, Progress, network};
 use anyhow::{Context as _, anyhow};
@@ -67,6 +68,12 @@ pub struct GitDatabase {
     repo: git2::Repository,
 }
 
+impl GitDatabase {
+    pub fn resolve_ref(&self, reference: &GitReference) -> CargoResult<git2::Oid> {
+        resolve_ref(reference, &self.repo)
+    }
+}
+
 /// A local checkout of a particular revision from a [`GitDatabase`].
 pub struct GitCheckout<'a> {
     /// The git database where this checkout is cloned from.
@@ -105,7 +112,7 @@ impl GitRemote {
         into: &Path,
         db: Option<GitDatabase>,
         reference: &GitReference,
-        gctx: &GlobalContext,
+        gctx: GlobalContextSync<'_>,
     ) -> CargoResult<(GitDatabase, git2::Oid)> {
         if let Some(mut db) = db {
             fetch(
@@ -168,7 +175,7 @@ impl GitDatabase {
         &self,
         rev: git2::Oid,
         dest: &Path,
-        gctx: &GlobalContext,
+        gctx: GlobalContextSync<'_>,
     ) -> CargoResult<GitCheckout<'_>> {
         // If the existing checkout exists, and it is fresh, use it.
         // A non-fresh checkout can happen if the checkout operation was
@@ -283,7 +290,7 @@ impl<'a> GitCheckout<'a> {
         into: &Path,
         database: &'a GitDatabase,
         revision: git2::Oid,
-        gctx: &GlobalContext,
+        gctx: GlobalContextSync<'_>,
     ) -> CargoResult<(GitCheckout<'a>, CheckoutGuard)> {
         let dirname = into.parent().unwrap();
         paths::create_dir_all(&dirname)?;
@@ -363,7 +370,7 @@ impl<'a> GitCheckout<'a> {
     /// (e.g. submodule update) before marking the check-out as ready.
     ///
     /// [`.cargo-ok`]: CHECKOUT_READY_LOCK
-    fn reset(&self, gctx: &GlobalContext) -> CargoResult<CheckoutGuard> {
+    fn reset(&self, gctx: GlobalContextSync<'_>) -> CargoResult<CheckoutGuard> {
         let guard = CheckoutGuard::guard(&self.path);
         info!("reset {} to {}", self.repo.path().display(), self.revision);
 
@@ -384,13 +391,13 @@ impl<'a> GitCheckout<'a> {
     /// Submodules set to `none` won't be fetched.
     ///
     /// [^1]: <https://git-scm.com/docs/git-submodule#Documentation/git-submodule.txt-none>
-    fn update_submodules(&self, gctx: &GlobalContext) -> CargoResult<()> {
+    fn update_submodules(&self, gctx: GlobalContextSync<'_>) -> CargoResult<()> {
         return update_submodules(&self.repo, gctx, self.remote_url().as_str());
 
         /// Recursive helper for [`GitCheckout::update_submodules`].
         fn update_submodules(
             repo: &git2::Repository,
-            gctx: &GlobalContext,
+            gctx: GlobalContextSync<'_>,
             parent_remote_url: &str,
         ) -> CargoResult<()> {
             debug!("update submodules for: {:?}", repo.workdir().unwrap());
@@ -410,7 +417,7 @@ impl<'a> GitCheckout<'a> {
         fn update_submodule(
             parent: &git2::Repository,
             child: &mut git2::Submodule<'_>,
-            gctx: &GlobalContext,
+            gctx: GlobalContextSync<'_>,
             parent_remote_url: &str,
         ) -> CargoResult<()> {
             child.init(false)?;
@@ -582,7 +589,7 @@ fn absolute_submodule_url<'s>(base_url: &str, submodule_url: &'s str) -> CargoRe
 /// just sit here looping forever we keep track of authentications we've
 /// attempted and we don't try the same ones again.
 fn with_authentication<T, F>(
-    gctx: &GlobalContext,
+    gctx: GlobalContextSync<'_>,
     url: &str,
     cfg: &git2::Config,
     mut f: F,
@@ -824,8 +831,12 @@ where
 /// `git reset --hard` to the given `obj` for the `repo`.
 ///
 /// The `obj` is a commit-ish to which the head should be moved.
-fn reset(repo: &git2::Repository, obj: &git2::Object<'_>, gctx: &GlobalContext) -> CargoResult<()> {
-    let mut pb = Progress::new("Checkout", gctx);
+fn reset(
+    repo: &git2::Repository,
+    obj: &git2::Object<'_>,
+    gctx: GlobalContextSync<'_>,
+) -> CargoResult<()> {
+    let mut pb = Progress::new_sync("Checkout", gctx.clone());
     let mut opts = git2::build::CheckoutBuilder::new();
     opts.progress(|_, cur, max| {
         drop(pb.tick(cur, max, ""));
@@ -847,10 +858,10 @@ fn reset(repo: &git2::Repository, obj: &git2::Object<'_>, gctx: &GlobalContext) 
 pub fn with_fetch_options(
     git_config: &git2::Config,
     url: &str,
-    gctx: &GlobalContext,
+    gctx: GlobalContextSync<'_>,
     cb: &mut dyn FnMut(git2::FetchOptions<'_>) -> CargoResult<()>,
 ) -> CargoResult<()> {
-    let mut progress = Progress::new("Fetch", gctx);
+    let mut progress = Progress::new_sync("Fetch", gctx.clone());
     let ssh_config = gctx.net_config()?.ssh.as_ref();
     let config_known_hosts = ssh_config.and_then(|ssh| ssh.known_hosts.as_ref());
     let diagnostic_home_config = gctx.diagnostic_home_config();
@@ -952,7 +963,7 @@ pub fn fetch(
     repo: &mut git2::Repository,
     remote_url: &str,
     reference: &GitReference,
-    gctx: &GlobalContext,
+    gctx: GlobalContextSync<'_>,
     remote_kind: RemoteKind,
 ) -> CargoResult<()> {
     if let Some(offline_flag) = gctx.offline_flag() {
@@ -1075,7 +1086,7 @@ fn fetch_with_cli(
     url: &str,
     refspecs: &[String],
     tags: bool,
-    gctx: &GlobalContext,
+    gctx: GlobalContextSync<'_>,
 ) -> CargoResult<()> {
     let mut cmd = ProcessBuilder::new("git");
     cmd.arg("fetch");
@@ -1120,7 +1131,7 @@ fn fetch_with_gitoxide(
     refspecs: Vec<String>,
     tags: bool,
     shallow: gix::remote::fetch::Shallow,
-    gctx: &GlobalContext,
+    gctx: GlobalContextSync<'_>,
 ) -> CargoResult<()> {
     let git2_repo = repo;
     let config_overrides = cargo_config_to_gitoxide_overrides(gctx)?;
@@ -1228,7 +1239,7 @@ fn fetch_with_libgit2(
     refspecs: Vec<String>,
     tags: bool,
     shallow: gix::remote::fetch::Shallow,
-    gctx: &GlobalContext,
+    gctx: GlobalContextSync<'_>,
 ) -> CargoResult<()> {
     debug!("doing a fetch for {remote_url}");
     let git_config = git2::Config::open_default()?;
@@ -1251,7 +1262,10 @@ fn fetch_with_libgit2(
         // blown away the repository, then we want to return the error as-is.
         let mut repo_reinitialized = false;
         loop {
-            debug!("initiating fetch of {refspecs:?} from {remote_url}");
+            debug!(
+                "initiating fetch of {refspecs:?} from {remote_url} {}",
+                std::backtrace::Backtrace::force_capture()
+            );
             let res = repo
                 .remote_anonymous(remote_url)?
                 .fetch(&refspecs, Some(&mut opts), None);
@@ -1299,7 +1313,7 @@ fn fetch_with_libgit2(
 /// we're about to issue.
 ///
 /// [#4403]: https://github.com/rust-lang/cargo/issues/4403
-fn maybe_gc_repo(repo: &mut git2::Repository, gctx: &GlobalContext) -> CargoResult<()> {
+fn maybe_gc_repo(repo: &mut git2::Repository, gctx: GlobalContextSync<'_>) -> CargoResult<()> {
     // Here we arbitrarily declare that if you have more than 100 files in your
     // `pack` folder that we need to do a gc.
     let entries = match repo.path().join("objects/pack").read_dir() {
@@ -1449,13 +1463,15 @@ fn github_fast_path(
     repo: &mut git2::Repository,
     url: &str,
     reference: &GitReference,
-    gctx: &GlobalContext,
+    gctx: GlobalContextSync<'_>,
 ) -> CargoResult<FastPathRev> {
     let url = Url::parse(url)?;
     if !is_github(&url) {
         return Ok(FastPathRev::Indeterminate);
     }
+    Ok(FastPathRev::Indeterminate)
 
+    /*
     let local_object = resolve_ref(reference, repo).ok();
 
     let github_branch_name = match reference {
@@ -1567,6 +1583,7 @@ fn github_fast_path(
         debug!("github fast path bad response code {response_code}");
         Ok(FastPathRev::Indeterminate)
     }
+    */
 }
 
 /// Whether a `url` is one from GitHub.

@@ -9,6 +9,8 @@ use crate::util::{CargoResult, GlobalContext};
 use cargo_util::is_ci;
 use unicode_width::UnicodeWidthChar;
 
+use super::context::GlobalContextSync;
+
 /// CLI progress bar.
 ///
 /// The `Progress` object can be in an enabled or disabled state. When
@@ -61,7 +63,7 @@ struct Throttle {
 }
 
 struct State<'gctx> {
-    gctx: &'gctx GlobalContext,
+    gctx: GlobalContextSync<'gctx>,
     format: Format,
     name: String,
     done: bool,
@@ -118,7 +120,7 @@ impl TerminalIntegration {
 
     /// Creates a `TerminalIntegration` from Cargo's configuration.
     /// Autodetect support if not explicitly enabled or disabled.
-    fn from_config(gctx: &GlobalContext) -> Self {
+    fn from_config(gctx: &GlobalContextSync<'_>) -> Self {
         let enabled = gctx
             .progress_config()
             .term_integration
@@ -194,6 +196,14 @@ impl<'gctx> Progress<'gctx> {
         style: ProgressStyle,
         gctx: &'gctx GlobalContext,
     ) -> Progress<'gctx> {
+        Self::with_style_sync(name, style, gctx.sync())
+    }
+
+    pub fn with_style_sync(
+        name: &str,
+        style: ProgressStyle,
+        gctx: GlobalContextSync<'gctx>,
+    ) -> Progress<'gctx> {
         // report no progress when -q (for quiet) or TERM=dumb are set
         // or if running on Continuous Integration service like Travis where the
         // output logs get mangled.
@@ -213,7 +223,11 @@ impl<'gctx> Progress<'gctx> {
         Progress::new_priv(name, style, gctx)
     }
 
-    fn new_priv(name: &str, style: ProgressStyle, gctx: &'gctx GlobalContext) -> Progress<'gctx> {
+    fn new_priv(
+        name: &str,
+        style: ProgressStyle,
+        gctx: GlobalContextSync<'gctx>,
+    ) -> Progress<'gctx> {
         let progress_config = gctx.progress_config();
         let width = progress_config
             .width
@@ -228,7 +242,7 @@ impl<'gctx> Progress<'gctx> {
                     // 50 gives some space for text after the progress bar,
                     // even on narrow (e.g. 80 char) terminals.
                     max_print: 50,
-                    term_integration: TerminalIntegration::from_config(gctx),
+                    term_integration: TerminalIntegration::from_config(&gctx),
                 },
                 name: name.to_string(),
                 done: false,
@@ -254,6 +268,10 @@ impl<'gctx> Progress<'gctx> {
     /// See [`Progress::with_style`] for more information.
     pub fn new(name: &str, gctx: &'gctx GlobalContext) -> Progress<'gctx> {
         Self::with_style(name, ProgressStyle::Percentage, gctx)
+    }
+
+    pub fn new_sync(name: &str, gctx: GlobalContextSync<'gctx>) -> Progress<'gctx> {
+        Self::with_style_sync(name, ProgressStyle::Percentage, gctx)
     }
 
     /// Updates the state of the progress bar.

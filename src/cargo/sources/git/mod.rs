@@ -18,6 +18,7 @@ mod utils;
 pub mod fetch {
     use crate::GlobalContext;
     use crate::core::features::GitFeatures;
+    use crate::util::context::GlobalContextSync;
 
     /// The kind remote repository to fetch.
     #[derive(Debug, Copy, Clone)]
@@ -35,7 +36,7 @@ pub mod fetch {
         pub(crate) fn to_shallow_setting(
             &self,
             repo_is_shallow: bool,
-            gctx: &GlobalContext,
+            gctx: GlobalContextSync<'_>,
         ) -> gix::remote::fetch::Shallow {
             let has_feature = |cb: &dyn Fn(GitFeatures) -> bool| {
                 gctx.cli_unstable()
