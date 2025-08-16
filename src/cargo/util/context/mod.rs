@@ -63,7 +63,7 @@ use std::io::prelude::*;
 use std::mem;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
-use std::sync::{Arc, Once, RwLock, RwLockWriteGuard};
+use std::sync::{Arc, Mutex, MutexGuard, Once, RwLock, RwLockWriteGuard};
 use std::time::Instant;
 
 use self::ConfigValue as CV;
@@ -162,7 +162,7 @@ pub struct CredentialCacheValue {
 #[derive(Clone, Copy)]
 pub struct GlobalContextSync<'gctx> {
     home_path: &'gctx Filesystem,
-    shell: &'gctx RwLock<Shell>,
+    shell: &'gctx Mutex<Shell>,
     cli_config: &'gctx Option<Vec<String>>,
     cwd: &'gctx PathBuf,
     search_stop_path: &'gctx Option<PathBuf>,
@@ -199,8 +199,8 @@ where
 
 impl<'gctx> GlobalContextSync<'gctx> {
     /// Gets a reference to the shell, e.g., for writing error messages.
-    pub fn shell(&self) -> RwLockWriteGuard<'_, Shell> {
-        self.shell.write().unwrap()
+    pub fn shell(&self) -> MutexGuard<'_, Shell> {
+        self.shell.lock().unwrap()
     }
 
     /// Get the value of environment variable `key` through the snapshot in
@@ -366,7 +366,7 @@ pub struct GlobalContext {
     /// The location of the user's Cargo home directory. OS-dependent.
     home_path: Filesystem,
     /// Information about how to write messages to the shell
-    shell: RwLock<Shell>,
+    shell: Mutex<Shell>,
     /// A collection of configuration options
     values: LazyCell<HashMap<String, ConfigValue>>,
     /// A collection of configuration options from the credentials file
@@ -483,7 +483,7 @@ impl GlobalContext {
 
         GlobalContext {
             home_path: Filesystem::new(homedir),
-            shell: RwLock::new(shell),
+            shell: Mutex::new(shell),
             cwd,
             search_stop_path: None,
             values: LazyCell::new(),
@@ -608,8 +608,8 @@ impl GlobalContext {
     }
 
     /// Gets a reference to the shell, e.g., for writing error messages.
-    pub fn shell(&self) -> RwLockWriteGuard<'_, Shell> {
-        self.shell.write().unwrap()
+    pub fn shell(&self) -> MutexGuard<'_, Shell> {
+        self.shell.lock().unwrap()
     }
 
     /// Gets the path to the `rustdoc` executable.
