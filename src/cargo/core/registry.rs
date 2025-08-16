@@ -658,7 +658,7 @@ https://doc.rust-lang.org/cargo/reference/overriding-dependencies.html
         &mut self,
         deps: impl IntoIterator<Item = &'a Dependency>,
     ) -> CargoResult<()> {
-        println!("Dep sources being loaded!");
+        debug!("Dep sources being loaded!");
         let mut sources = IndexSet::<SourceId>::default();
         for dep in deps {
             // Look for an override and get ready to query the real source.
@@ -883,7 +883,7 @@ impl<'gctx> Registry for PackageRegistry<'gctx> {
         let sources_ids = self.sources.sources_ids().copied().collect::<Vec<_>>();
         let fetchers: Vec<_> = sources_ids
             .iter()
-            .map(|id| self.sources.get(*id).unwrap().fetcher())
+            .filter_map(|id| self.sources.get(*id).unwrap().fetcher())
             .collect();
         use rayon::iter::{IntoParallelIterator, ParallelIterator};
         let results: Vec<_> = fetchers

@@ -278,7 +278,7 @@ impl<'gctx> Fetcher<'gctx> for GitFetcher<'gctx> {
             return Ok(());
         }
 
-        println!("Fetching...");
+        crate::debug!("Fetching...");
 
         let git_fs = self.gctx.git_path();
         // Ignore errors creating it, in case this is a read-only filesystem:
@@ -371,8 +371,12 @@ impl<'gctx> Fetcher<'gctx> for GitFetcher<'gctx> {
 }
 
 impl<'gctx> Source for GitSource<'gctx> {
-    fn fetcher(&self) -> Box<dyn Fetcher<'_> + '_> {
-        Box::new(GitFetcher::new(self))
+    fn fetcher(&self) -> Option<Box<dyn Fetcher<'_> + '_>> {
+        if self.path_source.is_some() {
+            None
+        } else {
+            Some(Box::new(GitFetcher::new(self)))
+        }
     }
 
     fn fetch_done(&mut self) -> CargoResult<()> {

@@ -33,8 +33,8 @@ impl<'gctx> DependencyConfusionThreatOverlaySource<'gctx> {
 }
 
 impl<'gctx> Source for DependencyConfusionThreatOverlaySource<'gctx> {
-    fn fetcher(&self) -> Box<dyn super::source::Fetcher<'_>> {
-        Box::new(super::source::NoopFetcher)
+    fn fetcher(&self) -> Option<Box<dyn super::source::Fetcher<'_>>> {
+        None
     }
 
     fn fetch_done(&mut self) -> crate::CargoResult<()> {
