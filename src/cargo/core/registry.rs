@@ -749,8 +749,13 @@ https://doc.rust-lang.org/cargo/reference/overriding-dependencies.html
             fetched_ids.push(id);
             res?;
         }
+        if !fetched_ids.is_empty() {
+            println!("Blocking until {fetched_ids:?} are ready");
+        }
         for source_id in fetched_ids {
-            self.sources.get_mut(source_id).unwrap()
+            self.sources
+                .get_mut(source_id)
+                .unwrap()
                 .block_until_ready()
                 .with_context(|| format!("Unable to update {}", source_id))?;
         }
