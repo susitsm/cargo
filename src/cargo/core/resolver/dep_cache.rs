@@ -92,19 +92,6 @@ impl<'a> RegistryQueryer<'a> {
         self.used_replacements.get(&p)
     }
 
-    fn query_many(
-        &mut self,
-        args: &[(&Dependency, Option<VersionOrdering>)],
-    ) -> Vec<Poll<CargoResult<Rc<Vec<Summary>>>>> {
-        let registry_cache_keys: IndexSet<_> = args
-            .iter()
-            .cloned()
-            .map(|(dep, first_version)| (dep.clone(), first_version))
-            .collect();
-
-        Vec::new()
-    }
-
     /// Queries the `registry` to return a list of candidates for `dep`.
     ///
     /// This method is the location where overrides are taken into account. If
