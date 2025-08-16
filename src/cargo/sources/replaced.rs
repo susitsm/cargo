@@ -46,7 +46,7 @@ impl<'gctx> ReplacedSource<'gctx> {
 }
 
 impl<'gctx> Source for ReplacedSource<'gctx> {
-    fn fetcher(&self) -> Box<dyn super::source::Fetcher<'_> + '_> {
+    fn fetcher(&self) -> Option<Box<dyn super::source::Fetcher<'_> + '_>> {
         self.inner.fetcher()
     }
 

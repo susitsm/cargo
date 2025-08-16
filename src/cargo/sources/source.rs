@@ -16,12 +16,6 @@ pub trait Fetcher<'gctx>: Send {
     fn fetch(&self) -> CargoResult<()>;
 }
 
-impl<'gctx> Fetcher<'gctx> for NoopFetcher {
-    fn fetch(&self) -> CargoResult<()> {
-        Ok(())
-    }
-}
-
 /// An abstraction of different sources of Cargo packages.
 ///
 /// The [`Source`] trait generalizes the API to interact with these providers.
@@ -41,7 +35,7 @@ impl<'gctx> Fetcher<'gctx> for NoopFetcher {
 ///
 /// [dependency confusion attack]: https://medium.com/@alex.birsan/dependency-confusion-4a5d60fec610
 pub trait Source {
-    fn fetcher(&self) -> Box<dyn Fetcher<'_> + '_>;
+    fn fetcher(&self) -> Option<Box<dyn Fetcher<'_> + '_>>;
 
     fn fetch_done(&mut self) -> CargoResult<()>;
 
@@ -232,7 +226,7 @@ pub enum MaybePackage {
 
 /// A blanket implementation forwards all methods to [`Source`].
 impl<'a, T: Source + ?Sized + 'a> Source for Box<T> {
-    fn fetcher(&self) -> Box<dyn super::source::Fetcher<'_> + '_> {
+    fn fetcher(&self) -> Option<Box<dyn super::source::Fetcher<'_> + '_>> {
         (**self).fetcher()
     }
 
@@ -312,7 +306,7 @@ impl<'a, T: Source + ?Sized + 'a> Source for Box<T> {
 
 /// A blanket implementation forwards all methods to [`Source`].
 impl<'a, T: Source + ?Sized + 'a> Source for &'a mut T {
-    fn fetcher(&self) -> Box<dyn super::source::Fetcher<'_> + '_> {
+    fn fetcher(&self) -> Option<Box<dyn super::source::Fetcher<'_> + '_>> {
         (**self).fetcher()
     }
 
