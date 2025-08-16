@@ -41,6 +41,7 @@
 //! - <https://en.wikipedia.org/wiki/Exponential_backoff>
 //! - <https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Retry-After>
 
+use crate::util::context::GlobalContextSync;
 use crate::util::errors::HttpNotSuccessful;
 use crate::{CargoResult, GlobalContext};
 use anyhow::Error;
@@ -50,7 +51,7 @@ use std::time::Duration;
 
 /// State for managing retrying a network operation.
 pub struct Retry<'a> {
-    gctx: &'a GlobalContext,
+    gctx: GlobalContextSync<'a>,
     /// The number of failed attempts that have been done so far.
     ///
     /// Starts at 0, and increases by one each time an attempt fails.
@@ -90,7 +91,7 @@ const INITIAL_RETRY_SLEEP_BASE_MS: u64 = 500;
 const INITIAL_RETRY_JITTER_MS: u64 = 1000;
 
 impl<'a> Retry<'a> {
-    pub fn new(gctx: &'a GlobalContext) -> CargoResult<Retry<'a>> {
+    pub fn new(gctx: GlobalContextSync<'a>) -> CargoResult<Retry<'a>> {
         Ok(Retry {
             gctx,
             retries: 0,
@@ -242,7 +243,7 @@ fn maybe_spurious(err: &Error) -> bool {
 /// use cargo::util::network;
 /// let cargo_result = network::retry::with_retry(&gctx, || download_something());
 /// ```
-pub fn with_retry<T, F>(gctx: &GlobalContext, mut callback: F) -> CargoResult<T>
+pub fn with_retry<T, F>(gctx: GlobalContextSync<'_>, mut callback: F) -> CargoResult<T>
 where
     F: FnMut() -> CargoResult<T>,
 {
@@ -280,7 +281,7 @@ fn with_retry_repeats_the_call_then_works() {
     let mut results: Vec<CargoResult<()>> = vec![Ok(()), Err(error1), Err(error2)];
     let gctx = GlobalContext::default().unwrap();
     *gctx.shell() = Shell::from_write(Box::new(Vec::new()));
-    let result = with_retry(&gctx, || results.pop().unwrap());
+    let result = with_retry(gctx.sync(), || results.pop().unwrap());
     assert!(result.is_ok())
 }
 

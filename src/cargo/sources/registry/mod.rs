@@ -714,6 +714,14 @@ impl<'gctx> RegistrySource<'gctx> {
 }
 
 impl<'gctx> Source for RegistrySource<'gctx> {
+    fn fetcher(&self) -> Box<dyn super::source::Fetcher<'_>> {
+        Box::new(super::source::NoopFetcher)
+    }
+
+    fn fetch_done(&mut self) -> crate::CargoResult<()> {
+        Ok(())
+    }
+
     fn query(
         &mut self,
         dep: &Dependency,

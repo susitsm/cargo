@@ -626,7 +626,7 @@ impl<'gctx> RegistryData for HttpRegistry<'gctx> {
         // Looks like we're going to have to do a network request.
         self.start_fetch()?;
 
-        let mut handle = http_handle(self.gctx)?;
+        let mut handle = http_handle(self.gctx.sync())?;
         let full_url = self.full_url(path);
         debug!(target: "network", "fetch {}", full_url);
         handle.get(true)?;
@@ -720,7 +720,7 @@ impl<'gctx> RegistryData for HttpRegistry<'gctx> {
             path: path.to_path_buf(),
             data: RefCell::new(Vec::new()),
             header_map: Default::default(),
-            retry: Retry::new(self.gctx)?,
+            retry: Retry::new(self.gctx.sync())?,
         };
 
         // Finally add the request we've lined up to the pool of requests that cURL manages.

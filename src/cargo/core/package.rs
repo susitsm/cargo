@@ -428,7 +428,7 @@ impl<'gctx> PackageSet<'gctx> {
 
     pub fn enable_download<'a>(&'a self) -> CargoResult<Downloads<'a, 'gctx>> {
         assert!(!self.downloading.replace(true));
-        let timeout = HttpTimeout::new(self.gctx)?;
+        let timeout = HttpTimeout::new(self.gctx.sync())?;
         Ok(Downloads {
             start: Instant::now(),
             set: self,
@@ -736,7 +736,7 @@ impl<'a, 'gctx> Downloads<'a, 'gctx> {
         debug!(target: "network", "downloading {} as {}", id, token);
         assert!(self.pending_ids.insert(id));
 
-        let (mut handle, _timeout) = http_handle_and_timeout(self.set.gctx)?;
+        let (mut handle, _timeout) = http_handle_and_timeout(self.set.gctx.sync())?;
         handle.get(true)?;
         handle.url(&url)?;
         handle.follow_location(true)?; // follow redirects
@@ -805,7 +805,7 @@ impl<'a, 'gctx> Downloads<'a, 'gctx> {
             current: Cell::new(0),
             start: Instant::now(),
             timed_out: Cell::new(None),
-            retry: Retry::new(self.set.gctx)?,
+            retry: Retry::new(self.set.gctx.sync())?,
         };
         self.enqueue(dl, handle)?;
         self.tick(WhyTick::DownloadStarted)?;

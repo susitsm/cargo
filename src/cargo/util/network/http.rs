@@ -13,18 +13,19 @@ use tracing::trace;
 
 use crate::CargoResult;
 use crate::GlobalContext;
+use crate::util::context::GlobalContextSync;
 use crate::util::context::SslVersionConfig;
 use crate::util::context::SslVersionConfigRange;
 use crate::version;
 
 /// Creates a new HTTP handle with appropriate global configuration for cargo.
-pub fn http_handle(gctx: &GlobalContext) -> CargoResult<Easy> {
+pub fn http_handle(gctx: GlobalContextSync<'_>) -> CargoResult<Easy> {
     let (mut handle, timeout) = http_handle_and_timeout(gctx)?;
     timeout.configure(&mut handle)?;
     Ok(handle)
 }
 
-pub fn http_handle_and_timeout(gctx: &GlobalContext) -> CargoResult<(Easy, HttpTimeout)> {
+pub fn http_handle_and_timeout(gctx: GlobalContextSync<'_>) -> CargoResult<(Easy, HttpTimeout)> {
     if let Some(offline_flag) = gctx.offline_flag() {
         bail!(
             "attempting to make an HTTP request, but {offline_flag} was \
@@ -52,18 +53,21 @@ pub fn needs_custom_http_transport(gctx: &GlobalContext) -> CargoResult<bool> {
 }
 
 /// Configure a libcurl http handle with the defaults options for Cargo
-pub fn configure_http_handle(gctx: &GlobalContext, handle: &mut Easy) -> CargoResult<HttpTimeout> {
+pub fn configure_http_handle(
+    gctx: GlobalContextSync<'_>,
+    handle: &mut Easy,
+) -> CargoResult<HttpTimeout> {
     let http = gctx.http_config()?;
     if let Some(proxy) = super::proxy::http_proxy(http) {
         handle.proxy(&proxy)?;
     }
     if let Some(cainfo) = &http.cainfo {
-        let cainfo = cainfo.resolve_path(gctx);
+        let cainfo = cainfo.resolve_path_cwd(gctx.cwd());
         handle.cainfo(&cainfo)?;
     }
     // Use `proxy_cainfo` if explicitly set; otherwise, fall back to `cainfo` as curl does #15376.
     if let Some(proxy_cainfo) = http.proxy_cainfo.as_ref().or(http.cainfo.as_ref()) {
-        let proxy_cainfo = proxy_cainfo.resolve_path(gctx);
+        let proxy_cainfo = proxy_cainfo.resolve_path_cwd(gctx.cwd());
         handle.proxy_cainfo(&format!("{}", proxy_cainfo.display()))?;
     }
     if let Some(check) = http.check_revoke {
@@ -194,7 +198,7 @@ pub struct HttpTimeout {
 }
 
 impl HttpTimeout {
-    pub fn new(gctx: &GlobalContext) -> CargoResult<HttpTimeout> {
+    pub fn new(gctx: GlobalContextSync<'_>) -> CargoResult<HttpTimeout> {
         let http_config = gctx.http_config()?;
         let low_speed_limit = http_config.low_speed_limit.unwrap_or(10);
         let seconds = http_config

@@ -46,6 +46,14 @@ impl<'gctx> ReplacedSource<'gctx> {
 }
 
 impl<'gctx> Source for ReplacedSource<'gctx> {
+    fn fetcher(&self) -> Box<dyn super::source::Fetcher<'_> + '_> {
+        self.inner.fetcher()
+    }
+
+    fn fetch_done(&mut self) -> CargoResult<()> {
+        self.inner.fetch_done()
+    }
+
     fn source_id(&self) -> SourceId {
         self.to_replace
     }

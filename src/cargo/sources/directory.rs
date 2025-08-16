@@ -97,6 +97,14 @@ impl<'gctx> Debug for DirectorySource<'gctx> {
 }
 
 impl<'gctx> Source for DirectorySource<'gctx> {
+    fn fetcher(&self) -> Box<dyn super::source::Fetcher<'_>> {
+        Box::new(super::source::NoopFetcher)
+    }
+
+    fn fetch_done(&mut self) -> CargoResult<()> {
+        Ok(())
+    }
+
     fn query(
         &mut self,
         dep: &Dependency,

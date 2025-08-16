@@ -2,6 +2,7 @@
 //! `utils` closely for now. One day it can be renamed into `utils` once `git2` isn't required anymore.
 
 use crate::util::HumanBytes;
+use crate::util::context::GlobalContextSync;
 use crate::util::network::http::HttpTimeout;
 use crate::util::{MetricsCounter, Progress, network};
 use crate::{CargoResult, GlobalContext};
@@ -18,7 +19,7 @@ use tracing::debug;
 /// In future this may change to be the gitoxide repository itself.
 pub fn with_retry_and_progress(
     repo_path: &std::path::Path,
-    gctx: &GlobalContext,
+    gctx: GlobalContextSync<'_>,
     cb: &(
          dyn Fn(
         &std::path::Path,
@@ -31,7 +32,7 @@ pub fn with_retry_and_progress(
      ),
 ) -> CargoResult<()> {
     std::thread::scope(|s| {
-        let mut progress_bar = Progress::new("Fetch", gctx);
+        let mut progress_bar = Progress::new_sync("Fetch", gctx);
         let is_shallow = gctx.cli_unstable().git.map_or(false, |features| {
             features.shallow_deps || features.shallow_index
         });
@@ -273,7 +274,9 @@ pub fn open_repo(
 
 /// Convert `git` related cargo configuration into the respective `git` configuration which can be
 /// used when opening new repositories.
-pub fn cargo_config_to_gitoxide_overrides(gctx: &GlobalContext) -> CargoResult<Vec<BString>> {
+pub fn cargo_config_to_gitoxide_overrides(
+    gctx: GlobalContextSync<'_>,
+) -> CargoResult<Vec<BString>> {
     use gix::config::tree::{Core, Http, Key, gitoxide};
     let timeout = HttpTimeout::new(gctx)?;
     let http = gctx.http_config()?;
@@ -293,7 +296,8 @@ pub fn cargo_config_to_gitoxide_overrides(gctx: &GlobalContext) -> CargoResult<V
     }
     if let Some(cainfo) = &http.cainfo {
         values.push(
-            Http::SSL_CA_INFO.validated_assignment_fmt(&cainfo.resolve_path(gctx).display())?,
+            Http::SSL_CA_INFO
+                .validated_assignment_fmt(&cainfo.resolve_path_cwd(gctx.cwd()).display())?,
         );
     }
 

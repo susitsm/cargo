@@ -23,7 +23,7 @@
 //! and revoked markers. See "FIXME" comments littered in this file.
 
 use crate::CargoResult;
-use crate::util::context::{Definition, GlobalContext, Value};
+use crate::util::context::{Definition, GlobalContext, GlobalContextSync, Value};
 use crate::util::restricted_names::is_glob_pattern;
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
@@ -149,7 +149,7 @@ impl Display for KnownHostLocation {
 
 /// The git2 callback used to validate a certificate (only ssh known hosts are validated).
 pub fn certificate_check(
-    gctx: &GlobalContext,
+    gctx: GlobalContextSync<'_>,
     cert: &Cert<'_>,
     host: &str,
     port: Option<u16>,
@@ -326,7 +326,7 @@ pub fn certificate_check(
 
 /// Checks if the given host/host key pair is known.
 fn check_ssh_known_hosts(
-    gctx: &GlobalContext,
+    gctx: GlobalContextSync<'_>,
     cert_host_key: &git2::cert::CertHostkey<'_>,
     host: &str,
     config_known_hosts: Option<&Vec<Value<String>>>,
@@ -512,7 +512,7 @@ fn check_ssh_known_hosts_loaded(
 }
 
 /// Returns a list of files to try loading OpenSSH-formatted known hosts.
-fn known_host_files(gctx: &GlobalContext) -> Vec<PathBuf> {
+fn known_host_files(gctx: GlobalContextSync<'_>) -> Vec<PathBuf> {
     let mut result = Vec::new();
     if gctx
         .get_env_os("__CARGO_TEST_DISABLE_GLOBAL_KNOWN_HOST")

@@ -421,7 +421,7 @@ fn init_git_transports(gctx: &GlobalContext) {
         _ => return,
     }
 
-    let handle = match http_handle(gctx) {
+    let handle = match http_handle(gctx.sync()) {
         Ok(handle) => handle,
         Err(..) => return,
     };

@@ -8,17 +8,21 @@ use crate::sources::IndexSummary;
 use crate::sources::RecursivePathSource;
 use crate::sources::git::utils::GitRemote;
 use crate::sources::git::utils::rev_to_oid;
+use crate::sources::source::Fetcher;
 use crate::sources::source::MaybePackage;
 use crate::sources::source::QueryKind;
 use crate::sources::source::Source;
+use crate::util::Filesystem;
 use crate::util::GlobalContext;
 use crate::util::cache_lock::CacheLockMode;
+use crate::util::context::GlobalContextSync;
 use crate::util::errors::CargoResult;
 use crate::util::hex::short_hash;
 use crate::util::interning::InternedString;
 use anyhow::Context as _;
 use cargo_util::paths::exclude_from_backups_and_indexing;
 use std::fmt::{self, Debug, Formatter};
+use std::path::PathBuf;
 use std::task::Poll;
 use tracing::trace;
 use url::Url;
@@ -236,7 +240,251 @@ impl<'gctx> Debug for GitSource<'gctx> {
     }
 }
 
+struct GitFetcher<'gctx> {
+    already_fetched: bool,
+    git_path: PathBuf,
+    remote: GitRemote,
+    locked_rev: Revision,
+    quiet: bool,
+    ident: InternedString,
+    gctx: GlobalContextSync<'gctx>,
+}
+
+impl<'gctx> GitFetcher<'gctx> {
+    fn new(source: &GitSource<'gctx>) -> Self {
+        let git_fs = source.gctx.git_path();
+        // Ignore errors creating it, in case this is a read-only filesystem:
+        // perhaps the later operations can succeed anyhow.
+        let _ = git_fs.create_dir();
+        let git_path = source
+            .gctx
+            .assert_package_cache_locked(CacheLockMode::DownloadExclusive, &git_fs);
+        GitFetcher {
+            already_fetched: source.path_source.is_some(),
+            git_path: git_path.into(),
+            remote: source.remote.clone(),
+            locked_rev: source.locked_rev.clone(),
+            quiet: source.quiet,
+            ident: source.ident,
+            gctx: source.gctx.sync(),
+        }
+    }
+}
+
+impl<'gctx> Fetcher<'gctx> for GitFetcher<'gctx> {
+    fn fetch(&self) -> CargoResult<()> {
+        if self.already_fetched {
+            //self.mark_used()?;
+            return Ok(());
+        }
+
+        println!("Fetching...");
+
+        let git_fs = self.gctx.git_path();
+        // Ignore errors creating it, in case this is a read-only filesystem:
+        // perhaps the later operations can succeed anyhow.
+        let _ = git_fs.create_dir();
+        let git_path = &self.git_path;
+
+        // Before getting a checkout, make sure that `<cargo_home>/git` is
+        // marked as excluded from indexing and backups. Older versions of Cargo
+        // didn't do this, so we do it here regardless of whether `<cargo_home>`
+        // exists.
+        //
+        // This does not use `create_dir_all_excluded_from_backups_atomic` for
+        // the same reason: we want to exclude it even if the directory already
+        // exists.
+        exclude_from_backups_and_indexing(&git_path);
+
+        let db_path = self.gctx.git_db_path().join(&self.ident);
+        let db_path = db_path.into_path_unlocked();
+
+        let db = self.remote.db_at(&db_path).ok();
+
+        let (db, actual_rev) = match (&self.locked_rev, db) {
+            // If we have a locked revision, and we have a preexisting database
+            // which has that revision, then no update needs to happen.
+            (Revision::Locked(oid), Some(db)) if db.contains(*oid) => (db, *oid),
+
+            // If we're in offline mode, we're not locked, and we have a
+            // database, then try to resolve our reference with the preexisting
+            // repository.
+            (Revision::Deferred(git_ref), Some(db)) if !self.gctx.network_allowed() => {
+                let offline_flag = self
+                    .gctx
+                    .offline_flag()
+                    .expect("always present when `!network_allowed`");
+                let rev = db.resolve(&git_ref).with_context(|| {
+                    format!(
+                        "failed to lookup reference in preexisting repository, and \
+                         can't check for updates in offline mode ({offline_flag})"
+                    )
+                })?;
+                (db, rev)
+            }
+
+            // ... otherwise we use this state to update the git database. Note
+            // that we still check for being offline here, for example in the
+            // situation that we have a locked revision but the database
+            // doesn't have it.
+            (locked_rev, db) => {
+                if let Some(offline_flag) = self.gctx.offline_flag() {
+                    anyhow::bail!(
+                        "can't checkout from '{}': you are in the offline mode ({offline_flag})",
+                        self.remote.url()
+                    );
+                }
+
+                if !self.quiet {
+                    self.gctx.shell().status(
+                        "Updating",
+                        format!("git repository `{}`", self.remote.url()),
+                    )?;
+                }
+
+                trace!("updating git source `{:?}`", self.remote);
+
+                let locked_rev = locked_rev.clone().into();
+                self.remote.checkout(&db_path, db, &locked_rev, self.gctx)?
+            }
+        };
+
+        // Don’t use the full hash, in order to contribute less to reaching the
+        // path length limit on Windows. See
+        // <https://github.com/servo/servo/pull/14397>.
+        let short_id = db.to_short_id(actual_rev)?;
+
+        // Check out `actual_rev` from the database to a scoped location on the
+        // filesystem. This will use hard links and such to ideally make the
+        // checkout operation here pretty fast.
+        let checkout_path = self
+            .gctx
+            .git_checkouts_path()
+            .join(&self.ident)
+            .join(short_id.as_str());
+        let checkout_path = checkout_path.into_path_unlocked();
+        // need to redesign shell to handle parallel logs properly
+        db.copy_to(actual_rev, &checkout_path, self.gctx)?;
+
+        Ok(())
+    }
+}
+
 impl<'gctx> Source for GitSource<'gctx> {
+    fn fetcher(&self) -> Box<dyn Fetcher<'_> + '_> {
+        Box::new(GitFetcher::new(self))
+    }
+
+    fn fetch_done(&mut self) -> CargoResult<()> {
+        if self.path_source.is_some() {
+            self.mark_used()?;
+            return Ok(());
+        }
+
+        let git_fs = self.gctx.git_path();
+        // Ignore errors creating it, in case this is a read-only filesystem:
+        // perhaps the later operations can succeed anyhow.
+        let _ = git_fs.create_dir();
+        let git_path = self
+            .gctx
+            .assert_package_cache_locked(CacheLockMode::DownloadExclusive, &git_fs);
+
+        // Before getting a checkout, make sure that `<cargo_home>/git` is
+        // marked as excluded from indexing and backups. Older versions of Cargo
+        // didn't do this, so we do it here regardless of whether `<cargo_home>`
+        // exists.
+        //
+        // This does not use `create_dir_all_excluded_from_backups_atomic` for
+        // the same reason: we want to exclude it even if the directory already
+        // exists.
+        //exclude_from_backups_and_indexing(&git_path);
+
+        let db_path = self.gctx.git_db_path().join(&self.ident);
+        let db_path = db_path.into_path_unlocked();
+
+        let db = self.remote.db_at(&db_path).ok();
+
+        let (db, actual_rev) = match (&self.locked_rev, db) {
+            // If we have a locked revision, and we have a preexisting database
+            // which has that revision, then no update needs to happen.
+            (Revision::Locked(oid), Some(db)) if db.contains(*oid) => (db, *oid),
+
+            // If we're in offline mode, we're not locked, and we have a
+            // database, then try to resolve our reference with the preexisting
+            // repository.
+            (Revision::Deferred(git_ref), Some(db)) if !self.gctx.network_allowed() => {
+                let offline_flag = self
+                    .gctx
+                    .offline_flag()
+                    .expect("always present when `!network_allowed`");
+                let rev = db.resolve(&git_ref).with_context(|| {
+                    format!(
+                        "failed to lookup reference in preexisting repository, and \
+                         can't check for updates in offline mode ({offline_flag})"
+                    )
+                })?;
+                (db, rev)
+            }
+
+            // ... otherwise we use this state to update the git database. Note
+            // that we still check for being offline here, for example in the
+            // situation that we have a locked revision but the database
+            // doesn't have it.
+            (locked_rev, db) => {
+                if let Some(offline_flag) = self.gctx.offline_flag() {
+                    anyhow::bail!(
+                        "can't checkout from '{}': you are in the offline mode ({offline_flag})",
+                        self.remote.url()
+                    );
+                }
+
+                if !self.quiet {
+                    self.gctx.shell().status(
+                        "Updating",
+                        format!("git repository `{}`", self.remote.url()),
+                    )?;
+                }
+
+                trace!("updating git source `{:?}`", self.remote);
+
+                let locked_rev = locked_rev.clone().into();
+                let db = db.unwrap();
+                let rev = db.resolve_ref(&locked_rev).unwrap();
+                (db, rev)
+                //self.remote.checkout(&db_path, db, &locked_rev, self.gctx.sync())?
+            }
+        };
+
+        // Don’t use the full hash, in order to contribute less to reaching the
+        // path length limit on Windows. See
+        // <https://github.com/servo/servo/pull/14397>.
+        let short_id = db.to_short_id(actual_rev)?;
+
+        // Check out `actual_rev` from the database to a scoped location on the
+        // filesystem. This will use hard links and such to ideally make the
+        // checkout operation here pretty fast.
+        let checkout_path = self
+            .gctx
+            .git_checkouts_path()
+            .join(&self.ident)
+            .join(short_id.as_str());
+        let checkout_path = checkout_path.into_path_unlocked();
+        //db.copy_to(actual_rev, &checkout_path, self.gctx.sync())?;
+
+        let source_id = self
+            .source_id
+            .with_git_precise(Some(actual_rev.to_string()));
+        let path_source = RecursivePathSource::new(&checkout_path, source_id, self.gctx);
+
+        self.path_source = Some(path_source);
+        self.short_id = Some(short_id.as_str().into());
+        self.locked_rev = Revision::Locked(actual_rev);
+        self.path_source.as_mut().unwrap().load()?;
+
+        self.mark_used()?;
+        Ok(())
+    }
+
     fn query(
         &mut self,
         dep: &Dependency,
@@ -335,7 +583,8 @@ impl<'gctx> Source for GitSource<'gctx> {
                 trace!("updating git source `{:?}`", self.remote);
 
                 let locked_rev = locked_rev.clone().into();
-                self.remote.checkout(&db_path, db, &locked_rev, self.gctx)?
+                self.remote
+                    .checkout(&db_path, db, &locked_rev, self.gctx.sync())?
             }
         };
 
@@ -353,7 +602,7 @@ impl<'gctx> Source for GitSource<'gctx> {
             .join(&self.ident)
             .join(short_id.as_str());
         let checkout_path = checkout_path.into_path_unlocked();
-        db.copy_to(actual_rev, &checkout_path, self.gctx)?;
+        db.copy_to(actual_rev, &checkout_path, self.gctx.sync())?;
 
         let source_id = self
             .source_id

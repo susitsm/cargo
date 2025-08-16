@@ -383,7 +383,7 @@ impl<'gctx> RegistryData for RemoteRegistry<'gctx> {
             repo,
             url.as_str(),
             &self.index_git_ref,
-            self.gctx,
+            self.gctx.sync(),
             RemoteKind::Registry,
         )
         .with_context(|| format!("failed to fetch `{}`", url))?;

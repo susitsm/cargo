@@ -10,6 +10,18 @@ use crate::core::{Dependency, Package, PackageId};
 use crate::sources::IndexSummary;
 use crate::util::{CargoResult, GlobalContext};
 
+pub struct NoopFetcher;
+
+pub trait Fetcher<'gctx>: Send {
+    fn fetch(&self) -> CargoResult<()>;
+}
+
+impl<'gctx> Fetcher<'gctx> for NoopFetcher {
+    fn fetch(&self) -> CargoResult<()> {
+        Ok(())
+    }
+}
+
 /// An abstraction of different sources of Cargo packages.
 ///
 /// The [`Source`] trait generalizes the API to interact with these providers.
@@ -29,6 +41,10 @@ use crate::util::{CargoResult, GlobalContext};
 ///
 /// [dependency confusion attack]: https://medium.com/@alex.birsan/dependency-confusion-4a5d60fec610
 pub trait Source {
+    fn fetcher(&self) -> Box<dyn Fetcher<'_> + '_>;
+
+    fn fetch_done(&mut self) -> CargoResult<()>;
+
     /// Returns the [`SourceId`] corresponding to this source.
     fn source_id(&self) -> SourceId;
 
@@ -216,6 +232,14 @@ pub enum MaybePackage {
 
 /// A blanket implementation forwards all methods to [`Source`].
 impl<'a, T: Source + ?Sized + 'a> Source for Box<T> {
+    fn fetcher(&self) -> Box<dyn super::source::Fetcher<'_> + '_> {
+        (**self).fetcher()
+    }
+
+    fn fetch_done(&mut self) -> CargoResult<()> {
+        (**self).fetch_done()
+    }
+
     fn source_id(&self) -> SourceId {
         (**self).source_id()
     }
@@ -288,6 +312,14 @@ impl<'a, T: Source + ?Sized + 'a> Source for Box<T> {
 
 /// A blanket implementation forwards all methods to [`Source`].
 impl<'a, T: Source + ?Sized + 'a> Source for &'a mut T {
+    fn fetcher(&self) -> Box<dyn super::source::Fetcher<'_> + '_> {
+        (**self).fetcher()
+    }
+
+    fn fetch_done(&mut self) -> CargoResult<()> {
+        (**self).fetch_done()
+    }
+
     fn source_id(&self) -> SourceId {
         (**self).source_id()
     }
@@ -399,6 +431,10 @@ impl<'src> SourceMap<'src> {
     /// Like `HashMap::len`.
     pub fn len(&self) -> usize {
         self.map.len()
+    }
+
+    pub fn sources_ids(&self) -> impl Iterator<Item = &SourceId> {
+        self.map.keys()
     }
 
     /// Like `HashMap::iter_mut`.
