@@ -447,7 +447,10 @@ impl<'gctx> ValueDeserializer<'gctx> {
         let definition = {
             let env = de.key.as_env_key();
             let env_def = Definition::Environment(env.to_string());
-            match (de.gctx.env.contains_key(env), de.gctx.get_cv(&de.key)?) {
+            match (
+                de.gctx.sync().env.contains_key(env),
+                de.gctx.get_cv(&de.key)?,
+            ) {
                 (true, Some(cv)) => {
                     // Both, pick highest priority.
                     if env_def.is_higher_priority(cv.definition()) {

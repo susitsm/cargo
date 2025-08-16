@@ -159,28 +159,29 @@ pub struct CredentialCacheValue {
     pub operation_independent: bool,
 }
 
-#[derive(Clone, Copy)]
-pub struct GlobalContextSync<'gctx> {
-    home_path: &'gctx Filesystem,
-    shell: &'gctx Mutex<Shell>,
-    cli_config: &'gctx Option<Vec<String>>,
-    cwd: &'gctx PathBuf,
-    search_stop_path: &'gctx Option<PathBuf>,
+pub type GlobalContextSync<'gctx> = &'gctx GlobalContextSyncer;
+
+#[derive(Debug)]
+pub struct GlobalContextSyncer {
+    home_path: Filesystem,
+    shell: Mutex<Shell>,
+    cli_config: Option<Vec<String>>,
+    cwd: PathBuf,
+    search_stop_path: Option<PathBuf>,
     extra_verbose: bool,
     frozen: bool,
     locked: bool,
     offline: bool,
-    jobserver: &'gctx Option<jobserver::Client>,
-    unstable_flags: &'gctx CliUnstable,
-    unstable_flags_cli: &'gctx Option<Vec<String>>,
+    jobserver: Option<jobserver::Client>,
+    unstable_flags: CliUnstable,
+    unstable_flags_cli: Option<Vec<String>>,
     cache_rustc_info: bool,
-    creation_time: &'gctx Instant,
-    target_dir: &'gctx Option<Filesystem>,
-    progress_config: &'gctx ProgressConfig,
-    env: &'gctx Env,
-    nightly_features_allowed: bool,
-    net_config: &'gctx AtomicLazyCell<CargoNetConfig>,
-    http_config: &'gctx AtomicLazyCell<CargoHttpConfig>,
+    creation_time: Instant,
+    target_dir: Option<Filesystem>,
+    progress_config: ProgressConfig,
+    env: Env,
+    net_config: AtomicLazyCell<CargoNetConfig>,
+    http_config: AtomicLazyCell<CargoHttpConfig>,
 }
 
 fn try_borrow_with<T, E, F>(this: &AtomicLazyCell<T>, f: F) -> Result<&T, E>
@@ -197,7 +198,7 @@ where
     Ok(this.borrow().unwrap())
 }
 
-impl<'gctx> GlobalContextSync<'gctx> {
+impl GlobalContextSyncer {
     /// Gets a reference to the shell, e.g., for writing error messages.
     pub fn shell(&self) -> MutexGuard<'_, Shell> {
         self.shell.lock().unwrap()
@@ -258,8 +259,8 @@ impl<'gctx> GlobalContextSync<'gctx> {
         self.git_path().join("db")
     }
 
-    pub fn progress_config(&self) -> &'gctx ProgressConfig {
-        self.progress_config
+    pub fn progress_config(&self) -> &ProgressConfig {
+        &self.progress_config
     }
 
     pub fn diagnostic_home_config(&self) -> String {
@@ -321,7 +322,7 @@ impl<'gctx> GlobalContextSync<'gctx> {
         Ok(self.http_config.borrow().unwrap())
     }
 
-    pub fn cwd(&self) -> &'gctx Path {
+    pub fn cwd(&self) -> &Path {
         &self.cwd
     }
 
@@ -334,28 +335,7 @@ impl<'gctx> GlobalContextSync<'gctx> {
 
 impl GlobalContext {
     pub fn sync(&self) -> GlobalContextSync<'_> {
-        GlobalContextSync {
-            home_path: &self.home_path,
-            shell: &self.shell,
-            cli_config: &self.cli_config,
-            cwd: &self.cwd,
-            search_stop_path: &self.search_stop_path,
-            extra_verbose: self.extra_verbose,
-            frozen: self.frozen,
-            locked: self.locked,
-            offline: self.offline,
-            jobserver: &self.jobserver,
-            unstable_flags: &self.unstable_flags,
-            unstable_flags_cli: &self.unstable_flags_cli,
-            cache_rustc_info: self.cache_rustc_info,
-            creation_time: &self.creation_time,
-            target_dir: &self.target_dir,
-            env: &self.env,
-            progress_config: &self.progress_config,
-            nightly_features_allowed: self.nightly_features_allowed,
-            net_config: &self.net_config,
-            http_config: &self.http_config,
-        }
+        &self.sync
     }
 }
 
@@ -363,53 +343,19 @@ impl GlobalContext {
 /// relating to cargo itself.
 #[derive(Debug)]
 pub struct GlobalContext {
-    /// The location of the user's Cargo home directory. OS-dependent.
-    home_path: Filesystem,
-    /// Information about how to write messages to the shell
-    shell: Mutex<Shell>,
+    sync: GlobalContextSyncer,
     /// A collection of configuration options
     values: LazyCell<HashMap<String, ConfigValue>>,
     /// A collection of configuration options from the credentials file
     credential_values: LazyCell<HashMap<String, ConfigValue>>,
-    /// CLI config values, passed in via `configure`.
-    cli_config: Option<Vec<String>>,
-    /// The current working directory of cargo
-    cwd: PathBuf,
-    /// Directory where config file searching should stop (inclusive).
-    search_stop_path: Option<PathBuf>,
     /// The location of the cargo executable (path to current process)
     cargo_exe: LazyCell<PathBuf>,
     /// The location of the rustdoc executable
     rustdoc: LazyCell<PathBuf>,
-    /// Whether we are printing extra verbose messages
-    extra_verbose: bool,
-    /// `frozen` is the same as `locked`, but additionally will not access the
-    /// network to determine if the lock file is out-of-date.
-    frozen: bool,
-    /// `locked` is set if we should not update lock files. If the lock file
-    /// is missing, or needs to be updated, an error is produced.
-    locked: bool,
-    /// `offline` is set if we should never access the network, but otherwise
-    /// continue operating if possible.
-    offline: bool,
-    /// A global static IPC control mechanism (used for managing parallel builds)
-    jobserver: Option<jobserver::Client>,
-    /// Cli flags of the form "-Z something" merged with config file values
-    unstable_flags: CliUnstable,
-    /// Cli flags of the form "-Z something"
-    unstable_flags_cli: Option<Vec<String>>,
     /// A handle on curl easy mode for http calls
-    easy: AtomicLazyCell<RwLock<Easy>>,
+    easy: LazyCell<RefCell<Easy>>,
     /// Cache of the `SourceId` for crates.io
     crates_io_source_id: LazyCell<SourceId>,
-    /// If false, don't cache `rustc --version --verbose` invocations
-    cache_rustc_info: bool,
-    /// Creation time of this config, used to output the total build time
-    creation_time: Instant,
-    /// Target Directory via resolved Cli parameter
-    target_dir: Option<Filesystem>,
-    /// Environment variable snapshot.
-    env: Env,
     /// Tracks which sources have been updated to avoid multiple updates.
     updated_sources: LazyCell<RefCell<HashSet<SourceId>>>,
     /// Cache of credentials from configuration or credential providers.
@@ -420,13 +366,10 @@ pub struct GlobalContext {
     /// Locks on the package and index caches.
     package_cache_lock: CacheLocker,
     /// Cached configuration parsed by Cargo
-    http_config: AtomicLazyCell<CargoHttpConfig>,
     future_incompat_config: LazyCell<CargoFutureIncompatConfig>,
-    net_config: AtomicLazyCell<CargoNetConfig>,
     build_config: LazyCell<CargoBuildConfig>,
     target_cfgs: LazyCell<Vec<(String, TargetCfgConfig)>>,
     doc_extern_map: LazyCell<RustdocExternMap>,
-    progress_config: ProgressConfig,
     env_config: LazyCell<Arc<HashMap<String, OsString>>>,
     /// This should be false if:
     /// - this is an artifact of the rustc distribution process for "stable" or for "beta"
@@ -482,45 +425,47 @@ impl GlobalContext {
         };
 
         GlobalContext {
-            home_path: Filesystem::new(homedir),
-            shell: Mutex::new(shell),
-            cwd,
-            search_stop_path: None,
+            sync: GlobalContextSyncer {
+                home_path: Filesystem::new(homedir),
+                shell: Mutex::new(shell),
+                cwd,
+                search_stop_path: None,
+                cli_config: None,
+                extra_verbose: false,
+                frozen: false,
+                locked: false,
+                offline: false,
+                jobserver: unsafe {
+                    if GLOBAL_JOBSERVER.is_null() {
+                        None
+                    } else {
+                        Some((*GLOBAL_JOBSERVER).clone())
+                    }
+                },
+                unstable_flags: CliUnstable::default(),
+                unstable_flags_cli: None,
+                cache_rustc_info,
+                creation_time: Instant::now(),
+                target_dir: None,
+                env,
+                http_config: AtomicLazyCell::new(),
+                net_config: AtomicLazyCell::new(),
+                progress_config: ProgressConfig::default(),
+            },
             values: LazyCell::new(),
             credential_values: LazyCell::new(),
-            cli_config: None,
             cargo_exe: LazyCell::new(),
             rustdoc: LazyCell::new(),
-            extra_verbose: false,
-            frozen: false,
-            locked: false,
-            offline: false,
-            jobserver: unsafe {
-                if GLOBAL_JOBSERVER.is_null() {
-                    None
-                } else {
-                    Some((*GLOBAL_JOBSERVER).clone())
-                }
-            },
-            unstable_flags: CliUnstable::default(),
-            unstable_flags_cli: None,
-            easy: AtomicLazyCell::new(),
+            easy: LazyCell::new(),
             crates_io_source_id: LazyCell::new(),
-            cache_rustc_info,
-            creation_time: Instant::now(),
-            target_dir: None,
-            env,
             updated_sources: LazyCell::new(),
             credential_cache: LazyCell::new(),
             registry_config: LazyCell::new(),
             package_cache_lock: CacheLocker::new(),
-            http_config: AtomicLazyCell::new(),
             future_incompat_config: LazyCell::new(),
-            net_config: AtomicLazyCell::new(),
             build_config: LazyCell::new(),
             target_cfgs: LazyCell::new(),
             doc_extern_map: LazyCell::new(),
-            progress_config: ProgressConfig::default(),
             env_config: LazyCell::new(),
             nightly_features_allowed: matches!(&*features::channel(), "nightly" | "dev"),
             ws_roots: RefCell::new(HashMap::new()),
@@ -548,14 +493,14 @@ impl GlobalContext {
 
     /// Gets the user's Cargo home directory (OS-dependent).
     pub fn home(&self) -> &Filesystem {
-        &self.home_path
+        &self.sync.home_path
     }
 
     /// Returns a path to display to the user with the location of their home
     /// config file (to only be used for displaying a diagnostics suggestion,
     /// such as recommending where to add a config value).
     pub fn diagnostic_home_config(&self) -> String {
-        let home = self.home_path.as_path_unlocked();
+        let home = self.home().as_path_unlocked();
         let path = match self.get_file_path(home, "config", false) {
             Ok(Some(existing_path)) => existing_path,
             _ => home.join("config.toml"),
@@ -565,7 +510,7 @@ impl GlobalContext {
 
     /// Gets the Cargo Git directory (`<cargo_home>/git`).
     pub fn git_path(&self) -> Filesystem {
-        self.home_path.join("git")
+        self.home().join("git")
     }
 
     /// Gets the directory of code sources Cargo checkouts from Git bare repos
@@ -582,7 +527,7 @@ impl GlobalContext {
 
     /// Gets the Cargo base directory for all registry information (`<cargo_home>/registry`).
     pub fn registry_base_path(&self) -> Filesystem {
-        self.home_path.join("registry")
+        self.home().join("registry")
     }
 
     /// Gets the Cargo registry index directory (`<cargo_home>/registry/index`).
@@ -609,7 +554,7 @@ impl GlobalContext {
 
     /// Gets a reference to the shell, e.g., for writing error messages.
     pub fn shell(&self) -> MutexGuard<'_, Shell> {
-        self.shell.lock().unwrap()
+        self.sync.shell()
     }
 
     /// Gets the path to the `rustdoc` executable.
@@ -639,7 +584,7 @@ impl GlobalContext {
                 .join("rustc")
                 .into_path_unlocked()
                 .with_extension(env::consts::EXE_EXTENSION),
-            if self.cache_rustc_info {
+            if self.sync.cache_rustc_info {
                 cache_location
             } else {
                 None
@@ -771,8 +716,8 @@ impl GlobalContext {
     /// given path is included, but its ancestors are not.
     pub fn set_search_stop_path<P: Into<PathBuf>>(&mut self, path: P) {
         let path = path.into();
-        debug_assert!(self.cwd.starts_with(&path));
-        self.search_stop_path = Some(path);
+        debug_assert!(self.cwd().starts_with(&path));
+        self.sync.search_stop_path = Some(path);
     }
 
     /// Switches the working directory to [`std::env::current_dir`]
@@ -788,9 +733,9 @@ impl GlobalContext {
             )
         })?;
 
-        self.cwd = cwd;
-        self.home_path = Filesystem::new(homedir);
-        self.reload_rooted_at(self.cwd.clone())?;
+        self.sync.cwd = cwd;
+        self.sync.home_path = Filesystem::new(homedir);
+        self.reload_rooted_at(self.cwd().to_owned())?;
         Ok(())
     }
 
@@ -806,7 +751,7 @@ impl GlobalContext {
 
     /// The current working directory.
     pub fn cwd(&self) -> &Path {
-        &self.cwd
+        &self.sync.cwd
     }
 
     /// The `target` output directory to use.
@@ -815,7 +760,7 @@ impl GlobalContext {
     ///
     /// Callers should prefer [`Workspace::target_dir`] instead.
     pub fn target_dir(&self) -> CargoResult<Option<Filesystem>> {
-        if let Some(dir) = &self.target_dir {
+        if let Some(dir) = &self.sync().target_dir {
             Ok(Some(dir.clone()))
         } else if let Some(dir) = self.get_env_os("CARGO_TARGET_DIR") {
             // Check if the CARGO_TARGET_DIR environment variable is set to an empty string.
@@ -826,7 +771,7 @@ impl GlobalContext {
                 )
             }
 
-            Ok(Some(Filesystem::new(self.cwd.join(dir))))
+            Ok(Some(Filesystem::new(self.cwd().join(dir))))
         } else if let Some(val) = &self.build_config()?.target_dir {
             let path = val.resolve_path(self);
 
@@ -998,7 +943,7 @@ impl GlobalContext {
             // Root table can't have env value.
             return Ok(cv);
         }
-        let env = self.env.get_str(key.as_env_key());
+        let env = self.sync().env.get_str(key.as_env_key());
         let env_def = Definition::Environment(key.as_env_key().to_string());
         let use_env = match (&cv, env) {
             // Lists are always merged.
@@ -1069,18 +1014,18 @@ impl GlobalContext {
 
     /// Helper primarily for testing.
     pub fn set_env(&mut self, env: HashMap<String, String>) {
-        self.env = Env::from_map(env);
+        self.sync.env = Env::from_map(env);
     }
 
     /// Returns all environment variables as an iterator,
     /// keeping only entries where both the key and value are valid UTF-8.
     pub(crate) fn env(&self) -> impl Iterator<Item = (&str, &str)> {
-        self.env.iter_str()
+        self.sync.env.iter_str()
     }
 
     /// Returns all environment variable keys, filtering out keys that are not valid UTF-8.
     fn env_keys(&self) -> impl Iterator<Item = &str> {
-        self.env.keys_str()
+        self.sync.env.keys_str()
     }
 
     fn get_config_env<T>(&self, key: &ConfigKey) -> Result<OptValue<T>, ConfigError>
@@ -1088,7 +1033,7 @@ impl GlobalContext {
         T: FromStr,
         <T as FromStr>::Err: fmt::Display,
     {
-        match self.env.get_str(key.as_env_key()) {
+        match self.sync.env.get_str(key.as_env_key()) {
             Some(value) => {
                 let definition = Definition::Environment(key.as_env_key().to_string());
                 Ok(Some(Value {
@@ -1110,7 +1055,7 @@ impl GlobalContext {
     ///
     /// This can be used similarly to [`std::env::var`].
     pub fn get_env(&self, key: impl AsRef<OsStr>) -> CargoResult<&str> {
-        self.env.get_env(key)
+        self.sync.env.get_env(key)
     }
 
     /// Get the value of environment variable `key` through the snapshot in
@@ -1118,14 +1063,14 @@ impl GlobalContext {
     ///
     /// This can be used similarly to [`std::env::var_os`].
     pub fn get_env_os(&self, key: impl AsRef<OsStr>) -> Option<&OsStr> {
-        self.env.get_env_os(key)
+        self.sync.env.get_env_os(key)
     }
 
     /// Check if the [`GlobalContext`] contains a given [`ConfigKey`].
     ///
     /// See `ConfigMapAccess` for a description of `env_prefix_ok`.
     fn has_key(&self, key: &ConfigKey, env_prefix_ok: bool) -> CargoResult<bool> {
-        if self.env.contains_key(key.as_env_key()) {
+        if self.sync.env.contains_key(key.as_env_key()) {
             return Ok(true);
         }
         if env_prefix_ok {
@@ -1143,7 +1088,7 @@ impl GlobalContext {
     }
 
     fn check_environment_key_case_mismatch(&self, key: &ConfigKey) {
-        if let Some(env_key) = self.env.get_normalized(key.as_env_key()) {
+        if let Some(env_key) = self.sync.env.get_normalized(key.as_env_key()) {
             let _ = self.shell().warn(format!(
                 "environment variables are expected to use uppercase letters and underscores, \
                 the variable `{}` will be ignored and have no effect",
@@ -1231,7 +1176,7 @@ impl GlobalContext {
         key: &ConfigKey,
         output: &mut Vec<(String, Definition)>,
     ) -> CargoResult<()> {
-        let Some(env_val) = self.env.get_str(key.as_env_key()) else {
+        let Some(env_val) = self.sync.env.get_str(key.as_env_key()) else {
             self.check_environment_key_case_mismatch(key);
             return Ok(());
         };
@@ -1307,6 +1252,7 @@ impl GlobalContext {
         cli_config: &[String],
     ) -> CargoResult<()> {
         for warning in self
+            .sync
             .unstable_flags
             .parse(unstable_flags, self.nightly_features_allowed)?
         {
@@ -1315,10 +1261,10 @@ impl GlobalContext {
         if !unstable_flags.is_empty() {
             // store a copy of the cli flags separately for `load_unstable_flags_from_config`
             // (we might also need it again for `reload_rooted_at`)
-            self.unstable_flags_cli = Some(unstable_flags.to_vec());
+            self.sync.unstable_flags_cli = Some(unstable_flags.to_vec());
         }
         if !cli_config.is_empty() {
-            self.cli_config = Some(cli_config.iter().map(|s| s.to_string()).collect());
+            self.sync.cli_config = Some(cli_config.iter().map(|s| s.to_string()).collect());
             self.merge_cli_args()?;
         }
 
@@ -1326,14 +1272,14 @@ impl GlobalContext {
         // file itself may enable inclusion of other configs. In that case, we
         // want to re-load configs with includes enabled:
         self.load_unstable_flags_from_config()?;
-        if self.unstable_flags.config_include {
+        if self.cli_unstable().config_include {
             // If the config was already loaded (like when fetching the
             // `[alias]` table), it was loaded with includes disabled because
             // the `unstable_flags` hadn't been set up, yet. Any values
             // fetched before this step will not process includes, but that
             // should be fine (`[alias]` is one of the only things loaded
             // before configure). This can be removed when stabilized.
-            self.reload_rooted_at(self.cwd.clone())?;
+            self.reload_rooted_at(self.cwd().to_owned())?;
         }
 
         // Ignore errors in the configuration files. We don't want basic
@@ -1358,7 +1304,7 @@ impl GlobalContext {
             },
         };
         self.shell().set_verbosity(verbosity);
-        self.extra_verbose = extra_verbose;
+        self.sync.extra_verbose = extra_verbose;
 
         let color = color.or_else(|| term.color.as_deref());
         self.shell().set_color_choice(color)?;
@@ -1369,18 +1315,18 @@ impl GlobalContext {
             self.shell().set_unicode(unicode)?;
         }
 
-        self.progress_config = term.progress.unwrap_or_default();
+        self.sync.progress_config = term.progress.unwrap_or_default();
 
-        self.frozen = frozen;
-        self.locked = locked;
-        self.offline = offline
+        self.sync.frozen = frozen;
+        self.sync.locked = locked;
+        self.sync.offline = offline
             || self
                 .net_config()
                 .ok()
                 .and_then(|n| n.offline)
                 .unwrap_or(false);
         let cli_target_dir = target_dir.as_ref().map(|dir| Filesystem::new(dir.clone()));
-        self.target_dir = cli_target_dir;
+        self.sync.target_dir = cli_target_dir;
 
         Ok(())
     }
@@ -1389,15 +1335,15 @@ impl GlobalContext {
         // If nightly features are enabled, allow setting Z-flags from config
         // using the `unstable` table. Ignore that block otherwise.
         if self.nightly_features_allowed {
-            self.unstable_flags = self
+            self.sync.unstable_flags = self
                 .get::<Option<CliUnstable>>("unstable")?
                 .unwrap_or_default();
-            if let Some(unstable_flags_cli) = &self.unstable_flags_cli {
+            if let Some(unstable_flags_cli) = &self.sync.unstable_flags_cli {
                 // NB. It's not ideal to parse these twice, but doing it again here
                 //     allows the CLI to override config files for both enabling
                 //     and disabling, and doing it up top allows CLI Zflags to
                 //     control config parsing behavior.
-                self.unstable_flags.parse(unstable_flags_cli, true)?;
+                self.sync.unstable_flags.parse(unstable_flags_cli, true)?;
             }
         }
 
@@ -1405,21 +1351,33 @@ impl GlobalContext {
     }
 
     pub fn cli_unstable(&self) -> &CliUnstable {
-        &self.unstable_flags
+        &self.sync().unstable_flags
     }
 
     pub fn extra_verbose(&self) -> bool {
-        self.extra_verbose
+        self.sync.extra_verbose
     }
 
     pub fn network_allowed(&self) -> bool {
         !self.offline_flag().is_some()
     }
 
+    fn frozen(&self) -> bool {
+        self.sync().frozen
+    }
+
+    fn offline(&self) -> bool {
+        self.sync().offline
+    }
+
+    fn locked(&self) -> bool {
+        self.sync().locked
+    }
+
     pub fn offline_flag(&self) -> Option<&'static str> {
-        if self.frozen {
+        if self.frozen() {
             Some("--frozen")
-        } else if self.offline {
+        } else if self.offline() {
             Some("--offline")
         } else {
             None
@@ -1427,7 +1385,7 @@ impl GlobalContext {
     }
 
     pub fn set_locked(&mut self, locked: bool) {
-        self.locked = locked;
+        self.sync.locked = locked;
     }
 
     pub fn lock_update_allowed(&self) -> bool {
@@ -1435,9 +1393,9 @@ impl GlobalContext {
     }
 
     pub fn locked_flag(&self) -> Option<&'static str> {
-        if self.frozen {
+        if self.frozen() {
             Some("--frozen")
-        } else if self.locked {
+        } else if self.locked() {
             Some("--locked")
         } else {
             None
@@ -1446,7 +1404,7 @@ impl GlobalContext {
 
     /// Loads configuration from the filesystem.
     pub fn load_values(&self) -> CargoResult<HashMap<String, ConfigValue>> {
-        self.load_values_from(&self.cwd)
+        self.load_values_from(self.cwd())
     }
 
     /// Like [`load_values`](GlobalContext::load_values) but without merging config values.
@@ -1455,8 +1413,8 @@ impl GlobalContext {
     pub(crate) fn load_values_unmerged(&self) -> CargoResult<Vec<ConfigValue>> {
         let mut result = Vec::new();
         let mut seen = HashSet::new();
-        let home = self.home_path.clone().into_path_unlocked();
-        self.walk_tree(&self.cwd, &home, |path| {
+        let home = self.home().to_owned().into_path_unlocked();
+        self.walk_tree(&self.cwd(), &home, |path| {
             let mut cv = self._load_file(path, &mut seen, false, WhyLoad::FileDiscovery)?;
             if self.cli_unstable().config_include {
                 self.load_unmerged_include(&mut cv, &mut seen, &mut result)?;
@@ -1495,7 +1453,7 @@ impl GlobalContext {
         // This definition path is ignored, this is just a temporary container
         // representing the entire file.
         let mut cfg = CV::Table(HashMap::new(), Definition::Path(PathBuf::from(".")));
-        let home = self.home_path.clone().into_path_unlocked();
+        let home = self.home().to_owned().into_path_unlocked();
 
         self.walk_tree(path, &home, |path| {
             let value = self.load_file(path)?;
@@ -1649,12 +1607,12 @@ impl GlobalContext {
     /// Parses the CLI config args and returns them as a table.
     pub(crate) fn cli_args_as_table(&self) -> CargoResult<ConfigValue> {
         let mut loaded_args = CV::Table(HashMap::new(), Definition::Cli(None));
-        let Some(cli_args) = &self.cli_config else {
+        let Some(cli_args) = &self.sync().cli_config else {
             return Ok(loaded_args);
         };
         let mut seen = HashSet::new();
         for arg in cli_args {
-            let arg_as_path = self.cwd.join(arg);
+            let arg_as_path = self.cwd().join(arg);
             let tmp_table = if !arg.is_empty() && arg_as_path.exists() {
                 // --config path_to_file
                 let str_path = arg_as_path
@@ -1881,7 +1839,7 @@ impl GlobalContext {
     {
         let mut seen_dir = HashSet::new();
 
-        for current in paths::ancestors(pwd, self.search_stop_path.as_deref()) {
+        for current in paths::ancestors(pwd, self.sync.search_stop_path.as_deref()) {
             let config_root = current.join(".cargo");
             if let Some(path) = self.get_file_path(&config_root, "config", true)? {
                 walk(&path)?;
@@ -1957,7 +1915,7 @@ impl GlobalContext {
             return Ok(());
         }
 
-        let home_path = self.home_path.clone().into_path_unlocked();
+        let home_path = self.home().to_owned().into_path_unlocked();
         let Some(credentials) = self.get_file_path(&home_path, "credentials", true)? else {
             return Ok(());
         };
@@ -2012,7 +1970,7 @@ impl GlobalContext {
             Some(tool_path) => {
                 let maybe_relative = tool_path.contains('/') || tool_path.contains('\\');
                 let path = if maybe_relative {
-                    self.cwd.join(tool_path)
+                    self.cwd().join(tool_path)
                 } else {
                     PathBuf::from(tool_path)
                 };
@@ -2083,13 +2041,15 @@ impl GlobalContext {
     }
 
     pub fn jobserver_from_env(&self) -> Option<&jobserver::Client> {
-        self.jobserver.as_ref()
+        self.sync().jobserver.as_ref()
     }
 
-    pub fn http(&self) -> CargoResult<&RwLock<Easy>> {
-        let http = try_borrow_with(&self.easy, || http_handle(self.sync()).map(RwLock::new))?;
+    pub fn http(&self) -> CargoResult<&RefCell<Easy>> {
+        let http = &self
+            .easy
+            .try_borrow_with(|| http_handle(self.sync()).map(RefCell::new))?;
         {
-            let mut http = http.write().unwrap();
+            let mut http = http.borrow_mut();
             http.reset();
             let timeout = configure_http_handle(self.sync(), &mut http)?;
             timeout.configure(&mut http)?;
@@ -2098,7 +2058,7 @@ impl GlobalContext {
     }
 
     pub fn http_config(&self) -> CargoResult<&CargoHttpConfig> {
-        try_borrow_with(&self.http_config, || {
+        try_borrow_with(&self.sync().http_config, || {
             let mut http = self.get::<CargoHttpConfig>("http")?;
             let curl_v = curl::Version::get();
             disables_multiplexing_for_bad_curl(curl_v.version(), &mut http, self);
@@ -2112,7 +2072,9 @@ impl GlobalContext {
     }
 
     pub fn net_config(&self) -> CargoResult<&CargoNetConfig> {
-        try_borrow_with(&self.net_config, || self.get::<CargoNetConfig>("net"))
+        try_borrow_with(&self.sync().net_config, || {
+            self.get::<CargoNetConfig>("net")
+        })
     }
 
     pub fn build_config(&self) -> CargoResult<&CargoBuildConfig> {
@@ -2121,7 +2083,7 @@ impl GlobalContext {
     }
 
     pub fn progress_config(&self) -> &ProgressConfig {
-        &self.progress_config
+        &self.sync().progress_config
     }
 
     /// Get the env vars from the config `[env]` table which
@@ -2224,7 +2186,7 @@ impl GlobalContext {
     }
 
     pub fn creation_time(&self) -> Instant {
-        self.creation_time
+        self.sync().creation_time
     }
 
     /// Retrieves a config variable.
@@ -2268,7 +2230,7 @@ impl GlobalContext {
             "package cache lock is not currently held, Cargo forgot to call \
              `acquire_package_cache_lock` before we got to this stack frame",
         );
-        assert!(ret.starts_with(self.home_path.as_path_unlocked()));
+        assert!(ret.starts_with(self.home().as_path_unlocked()));
         ret
     }
 
@@ -2316,7 +2278,7 @@ impl GlobalContext {
 
     /// Get the global [`WarningHandling`] configuration.
     pub fn warning_handling(&self) -> CargoResult<WarningHandling> {
-        if self.unstable_flags.warnings {
+        if self.cli_unstable().warnings {
             Ok(self.build_config()?.warnings.unwrap_or_default())
         } else {
             Ok(WarningHandling::default())
@@ -2690,7 +2652,7 @@ pub fn save_credentials(
     // If 'credentials' exists, write to that for backward compatibility reasons.
     // Otherwise write to 'credentials.toml'. There's no need to print the
     // warning here, because it would already be printed at load time.
-    let home_path = gctx.home_path.clone().into_path_unlocked();
+    let home_path = gctx.home().to_owned().into_path_unlocked();
     let filename = match gctx.get_file_path(&home_path, "credentials", false)? {
         Some(path) => match path.file_name() {
             Some(filename) => Path::new(filename).to_owned(),
@@ -2700,8 +2662,8 @@ pub fn save_credentials(
     };
 
     let mut file = {
-        gctx.home_path.create_dir()?;
-        gctx.home_path
+        gctx.home().create_dir()?;
+        gctx.home()
             .open_rw_exclusive_create(filename, gctx, "credentials' config file")?
     };
 
