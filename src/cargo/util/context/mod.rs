@@ -326,11 +326,15 @@ impl GlobalContextSyncer {
         &self.cwd
     }
 
-    /*
-    pub fn http(&self) -> CargoResult<&RwLock<Easy>> {
-        todo!()
+    pub fn http(&self) -> CargoResult<Easy> {
+        let mut http = http_handle(self)?;
+        {
+            http.reset();
+            let timeout = configure_http_handle(self, &mut http)?;
+            timeout.configure(&mut http)?;
+        }
+        Ok(http)
     }
-    */
 }
 
 impl GlobalContext {
