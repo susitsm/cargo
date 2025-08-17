@@ -223,25 +223,26 @@ impl<'gctx> PackageRegistry<'gctx> {
 
     /// Ensures the [`Source`] of the given [`SourceId`] is loaded.
     /// If not, this will block until the source is ready.
+    #[must_use]
     fn ensure_loaded_without_blocking(
         &mut self,
         namespace: SourceId,
         kind: Kind,
-    ) -> CargoResult<()> {
+    ) -> CargoResult<bool> {
         match self.source_ids.get(&namespace) {
             // We've previously loaded this source, and we've already locked it,
             // so we're not allowed to change it even if `namespace` has a
             // slightly different precise version listed.
             Some((_, Kind::Locked)) => {
                 debug!("load/locked   {}", namespace);
-                return Ok(());
+                return Ok(true);
             }
 
             // If the previous source was not a precise source, then we can be
             // sure that it's already been updated if we've already loaded it.
             Some((previous, _)) if !previous.has_precise() => {
                 debug!("load/precise  {}", namespace);
-                return Ok(());
+                return Ok(true);
             }
 
             // If the previous source has the same precise version as we do,
@@ -250,7 +251,7 @@ impl<'gctx> PackageRegistry<'gctx> {
             Some((previous, _)) => {
                 if previous.has_same_precise_as(namespace) {
                     debug!("load/match    {}", namespace);
-                    return Ok(());
+                    return Ok(true);
                 }
                 debug!("load/mismatch {}", namespace);
             }
@@ -260,13 +261,15 @@ impl<'gctx> PackageRegistry<'gctx> {
         }
 
         self.load(namespace, kind)?;
-        Ok(())
+        Ok(false)
     }
 
     /// Ensures the [`Source`] of the given [`SourceId`] is loaded.
     /// If not, this will block until the source is ready.
     fn ensure_loaded(&mut self, namespace: SourceId, kind: Kind) -> CargoResult<()> {
-        self.ensure_loaded_without_blocking(namespace, kind)?;
+        if self.ensure_loaded_without_blocking(namespace, kind)? {
+            return Ok(());
+        }
 
         debug!("Ensure loaded {}", namespace);
         // This isn't strictly necessary since it will be called later.
@@ -717,10 +720,13 @@ https://doc.rust-lang.org/cargo/reference/overriding-dependencies.html
             sources.insert(dep.source_id());
         }
 
+        let block_until_ready = Vec::new();
         for source_id in &sources {
-            self.ensure_loaded_without_blocking(*source_id, Kind::Normal)?;
+            if !self.ensure_loaded_without_blocking(*source_id, Kind::Normal)? {
+                block_until_ready.push(source_id);
+            }
         }
-        self.block_until_sources_ready(sources);
+        self.block_until_sources_ready(block_until_ready);
         Ok(())
     }
 
