@@ -159,7 +159,7 @@ pub struct CredentialCacheValue {
     pub operation_independent: bool,
 }
 
-pub type GlobalContextSync<'gctx> = &'gctx GlobalContextSyncer;
+pub type GlobalContextSync<'gctx> = &'gctx GlobalContext;
 
 #[derive(Debug)]
 pub struct GlobalContextSyncer {
@@ -198,6 +198,7 @@ where
     Ok(this.borrow().unwrap())
 }
 
+/*
 impl GlobalContextSyncer {
     /// Gets a reference to the shell, e.g., for writing error messages.
     pub fn shell(&self) -> MutexGuard<'_, Shell> {
@@ -332,10 +333,11 @@ impl GlobalContextSyncer {
     }
     */
 }
+*/
 
 impl GlobalContext {
     pub fn sync(&self) -> GlobalContextSync<'_> {
-        &self.sync
+        self
     }
 }
 
@@ -554,7 +556,7 @@ impl GlobalContext {
 
     /// Gets a reference to the shell, e.g., for writing error messages.
     pub fn shell(&self) -> MutexGuard<'_, Shell> {
-        self.sync.shell()
+        self.sync.shell.lock().unwrap()
     }
 
     /// Gets the path to the `rustdoc` executable.
@@ -760,7 +762,7 @@ impl GlobalContext {
     ///
     /// Callers should prefer [`Workspace::target_dir`] instead.
     pub fn target_dir(&self) -> CargoResult<Option<Filesystem>> {
-        if let Some(dir) = &self.sync().target_dir {
+        if let Some(dir) = &self.sync.target_dir {
             Ok(Some(dir.clone()))
         } else if let Some(dir) = self.get_env_os("CARGO_TARGET_DIR") {
             // Check if the CARGO_TARGET_DIR environment variable is set to an empty string.
@@ -943,7 +945,7 @@ impl GlobalContext {
             // Root table can't have env value.
             return Ok(cv);
         }
-        let env = self.sync().env.get_str(key.as_env_key());
+        let env = self.sync.env.get_str(key.as_env_key());
         let env_def = Definition::Environment(key.as_env_key().to_string());
         let use_env = match (&cv, env) {
             // Lists are always merged.
@@ -1351,7 +1353,7 @@ impl GlobalContext {
     }
 
     pub fn cli_unstable(&self) -> &CliUnstable {
-        &self.sync().unstable_flags
+        &self.sync.unstable_flags
     }
 
     pub fn extra_verbose(&self) -> bool {
@@ -1363,15 +1365,15 @@ impl GlobalContext {
     }
 
     fn frozen(&self) -> bool {
-        self.sync().frozen
+        self.sync.frozen
     }
 
     fn offline(&self) -> bool {
-        self.sync().offline
+        self.sync.offline
     }
 
     fn locked(&self) -> bool {
-        self.sync().locked
+        self.sync.locked
     }
 
     pub fn offline_flag(&self) -> Option<&'static str> {
@@ -1607,7 +1609,7 @@ impl GlobalContext {
     /// Parses the CLI config args and returns them as a table.
     pub(crate) fn cli_args_as_table(&self) -> CargoResult<ConfigValue> {
         let mut loaded_args = CV::Table(HashMap::new(), Definition::Cli(None));
-        let Some(cli_args) = &self.sync().cli_config else {
+        let Some(cli_args) = &self.sync.cli_config else {
             return Ok(loaded_args);
         };
         let mut seen = HashSet::new();
@@ -2041,7 +2043,7 @@ impl GlobalContext {
     }
 
     pub fn jobserver_from_env(&self) -> Option<&jobserver::Client> {
-        self.sync().jobserver.as_ref()
+        self.sync.jobserver.as_ref()
     }
 
     pub fn http(&self) -> CargoResult<&RefCell<Easy>> {
@@ -2058,7 +2060,7 @@ impl GlobalContext {
     }
 
     pub fn http_config(&self) -> CargoResult<&CargoHttpConfig> {
-        try_borrow_with(&self.sync().http_config, || {
+        try_borrow_with(&self.sync.http_config, || {
             let mut http = self.get::<CargoHttpConfig>("http")?;
             let curl_v = curl::Version::get();
             disables_multiplexing_for_bad_curl(curl_v.version(), &mut http, self);
@@ -2072,9 +2074,7 @@ impl GlobalContext {
     }
 
     pub fn net_config(&self) -> CargoResult<&CargoNetConfig> {
-        try_borrow_with(&self.sync().net_config, || {
-            self.get::<CargoNetConfig>("net")
-        })
+        try_borrow_with(&self.sync.net_config, || self.get::<CargoNetConfig>("net"))
     }
 
     pub fn build_config(&self) -> CargoResult<&CargoBuildConfig> {
@@ -2083,7 +2083,7 @@ impl GlobalContext {
     }
 
     pub fn progress_config(&self) -> &ProgressConfig {
-        &self.sync().progress_config
+        &self.sync.progress_config
     }
 
     /// Get the env vars from the config `[env]` table which
@@ -2186,7 +2186,7 @@ impl GlobalContext {
     }
 
     pub fn creation_time(&self) -> Instant {
-        self.sync().creation_time
+        self.sync.creation_time
     }
 
     /// Retrieves a config variable.

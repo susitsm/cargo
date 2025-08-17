@@ -658,6 +658,7 @@ https://doc.rust-lang.org/cargo/reference/overriding-dependencies.html
         &mut self,
         deps: impl IntoIterator<Item = &'a Dependency>,
     ) -> CargoResult<()> {
+        unreachable!();
         debug!("Dep sources being loaded!");
         let mut sources = IndexSet::<SourceId>::default();
         for dep in deps {
