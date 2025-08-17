@@ -247,8 +247,8 @@ impl<'a> RegistryQueryer<'a> {
         // Next, transform all dependencies into a list of possible candidates
         // which can satisfy that dependency.
         let mut all_ready = true;
-        //let dep_vec = deps.iter().map(|(dep, _)| dep).collect::<Vec<_>>();
-        //self.registry.ensure_dep_sources_loaded(&dep_vec);
+        let dep_vec = deps.iter().map(|(dep, _)| dep).collect::<Vec<_>>();
+        self.registry.ensure_dep_sources_loaded(&dep_vec);
         let mut deps = deps
             .into_iter()
             .filter_map(|(dep, features)| match self.query(&dep, first_version) {

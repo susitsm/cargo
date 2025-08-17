@@ -159,7 +159,7 @@ pub struct CredentialCacheValue {
     pub operation_independent: bool,
 }
 
-pub type GlobalContextSync<'gctx> = &'gctx GlobalContext;
+pub type GlobalContextSync<'gctx> = &'gctx GlobalContextSyncer;
 
 #[derive(Debug)]
 pub struct GlobalContextSyncer {
@@ -198,7 +198,6 @@ where
     Ok(this.borrow().unwrap())
 }
 
-/*
 impl GlobalContextSyncer {
     /// Gets a reference to the shell, e.g., for writing error messages.
     pub fn shell(&self) -> MutexGuard<'_, Shell> {
@@ -333,11 +332,10 @@ impl GlobalContextSyncer {
     }
     */
 }
-*/
 
 impl GlobalContext {
     pub fn sync(&self) -> GlobalContextSync<'_> {
-        self
+        &self.sync
     }
 }
 
