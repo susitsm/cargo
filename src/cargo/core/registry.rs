@@ -276,7 +276,7 @@ impl<'gctx> PackageRegistry<'gctx> {
         // However it improves error messages for sources that issue errors
         // in `block_until_ready` because the callers here have context about
         // which deps are being resolved.
-        //self.block_until_ready()?;
+        self.block_until_ready()?;
         Ok(())
     }
 

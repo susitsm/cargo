@@ -1469,9 +1469,7 @@ fn github_fast_path(
     if !is_github(&url) {
         return Ok(FastPathRev::Indeterminate);
     }
-    Ok(FastPathRev::Indeterminate)
 
-    /*
     let local_object = resolve_ref(reference, repo).ok();
 
     let github_branch_name = match reference {
@@ -1544,7 +1542,8 @@ fn github_fast_path(
         "https://api.github.com/repos/{}/{}/commits/{}",
         username, repository, github_branch_name,
     );
-    let mut handle = gctx.http()?.borrow_mut();
+    // TODO: this is created from scratch, Easy is not sync
+    let mut handle = gctx.http()?;
     debug!("attempting GitHub fast path for {}", url);
     handle.get(true)?;
     handle.url(&url)?;
@@ -1583,7 +1582,6 @@ fn github_fast_path(
         debug!("github fast path bad response code {response_code}");
         Ok(FastPathRev::Indeterminate)
     }
-    */
 }
 
 /// Whether a `url` is one from GitHub.
