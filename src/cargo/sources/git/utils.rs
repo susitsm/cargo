@@ -836,7 +836,7 @@ fn reset(
     obj: &git2::Object<'_>,
     gctx: GlobalContextSync<'_>,
 ) -> CargoResult<()> {
-    let mut pb = Progress::new_sync("Checkout", gctx.clone());
+    let mut pb = Progress::new_sync("Checkout", gctx);
     let mut opts = git2::build::CheckoutBuilder::new();
     opts.progress(|_, cur, max| {
         drop(pb.tick(cur, max, ""));
@@ -861,7 +861,7 @@ pub fn with_fetch_options(
     gctx: GlobalContextSync<'_>,
     cb: &mut dyn FnMut(git2::FetchOptions<'_>) -> CargoResult<()>,
 ) -> CargoResult<()> {
-    let mut progress = Progress::new_sync("Fetch", gctx.clone());
+    let mut progress = Progress::new_sync("Fetch", gctx);
     let ssh_config = gctx.net_config()?.ssh.as_ref();
     let config_known_hosts = ssh_config.and_then(|ssh| ssh.known_hosts.as_ref());
     let diagnostic_home_config = gctx.diagnostic_home_config();
