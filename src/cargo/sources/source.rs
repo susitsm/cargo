@@ -35,9 +35,13 @@ pub trait Fetcher<'gctx>: Send {
 ///
 /// [dependency confusion attack]: https://medium.com/@alex.birsan/dependency-confusion-4a5d60fec610
 pub trait Source {
-    fn fetcher(&self) -> Option<Box<dyn Fetcher<'_> + '_>>;
+    fn fetcher(&self) -> Option<Box<dyn Fetcher<'_> + '_>> {
+        None
+    }
 
-    fn fetch_done(&mut self) -> CargoResult<()>;
+    fn fetch_done(&mut self) -> CargoResult<()> {
+        Ok(())
+    }
 
     /// Returns the [`SourceId`] corresponding to this source.
     fn source_id(&self) -> SourceId;
