@@ -276,7 +276,7 @@ impl<'gctx> PackageRegistry<'gctx> {
         // However it improves error messages for sources that issue errors
         // in `block_until_ready` because the callers here have context about
         // which deps are being resolved.
-        self.block_until_ready()?;
+        //self.block_until_ready()?;
         Ok(())
     }
 
@@ -661,7 +661,6 @@ https://doc.rust-lang.org/cargo/reference/overriding-dependencies.html
         &mut self,
         deps: impl IntoIterator<Item = &'a Dependency>,
     ) -> CargoResult<()> {
-        unreachable!();
         debug!("Dep sources being loaded!");
         let mut sources = IndexSet::<SourceId>::default();
         for dep in deps {
@@ -720,18 +719,18 @@ https://doc.rust-lang.org/cargo/reference/overriding-dependencies.html
             sources.insert(dep.source_id());
         }
 
-        let block_until_ready = Vec::new();
-        for source_id in &sources {
-            if !self.ensure_loaded_without_blocking(*source_id, Kind::Normal)? {
+        let mut block_until_ready = Vec::new();
+        for source_id in sources {
+            if !self.ensure_loaded_without_blocking(source_id, Kind::Normal)? {
                 block_until_ready.push(source_id);
             }
         }
-        self.block_until_sources_ready(block_until_ready);
+        self.block_until_sources_ready(block_until_ready)?;
         Ok(())
     }
 
     #[tracing::instrument(skip_all)]
-    fn block_until_sources_ready(&mut self, source_ids: IndexSet<SourceId>) -> CargoResult<()> {
+    fn block_until_sources_ready(&mut self, source_ids: Vec<SourceId>) -> CargoResult<()> {
         if cfg!(debug_assertions) {
             // Force borrow to catch invalid borrows, regardless of which source is used and how it
             // happens to behave this time
@@ -755,9 +754,6 @@ https://doc.rust-lang.org/cargo/reference/overriding-dependencies.html
         for (id, res) in results {
             fetched_ids.push(id);
             res?;
-        }
-        if !fetched_ids.is_empty() {
-            println!("Blocking until {fetched_ids:?} are ready");
         }
         for source_id in fetched_ids {
             self.sources

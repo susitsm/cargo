@@ -240,7 +240,6 @@ impl<'gctx> Debug for GitSource<'gctx> {
     }
 }
 
-/*
 struct GitFetcher<'gctx> {
     already_fetched: bool,
     git_path: PathBuf,
@@ -370,23 +369,17 @@ impl<'gctx> Fetcher<'gctx> for GitFetcher<'gctx> {
         Ok(())
     }
 }
-*/
 
 impl<'gctx> Source for GitSource<'gctx> {
     fn fetcher(&self) -> Option<Box<dyn Fetcher<'_> + '_>> {
-        None
-        /*
         if self.path_source.is_some() {
             None
         } else {
             Some(Box::new(GitFetcher::new(self)))
         }
-        */
     }
 
     fn fetch_done(&mut self) -> CargoResult<()> {
-        unimplemented!()
-        /*
         if self.path_source.is_some() {
             self.mark_used()?;
             return Ok(());
@@ -449,12 +442,14 @@ impl<'gctx> Source for GitSource<'gctx> {
                     );
                 }
 
+                /*
                 if !self.quiet {
                     self.gctx.shell().status(
-                        "Updating",
+                        "Updating 2",
                         format!("git repository `{}`", self.remote.url()),
                     )?;
                 }
+                */
 
                 trace!("updating git source `{:?}`", self.remote);
 
@@ -494,7 +489,6 @@ impl<'gctx> Source for GitSource<'gctx> {
 
         self.mark_used()?;
         Ok(())
-            */
     }
 
     fn query(
