@@ -183,6 +183,10 @@ pub trait Source {
     /// If no queries previously returned `Poll::Pending`, and [`Source::invalidate_cache`]
     /// was not called, this function should be a no-op.
     fn block_until_ready(&mut self) -> CargoResult<()>;
+
+    fn pend_until_ready(&mut self) -> Poll<CargoResult<()>> {
+        Poll::Ready(self.block_until_ready())
+    }
 }
 
 /// Defines how a dependency query will be performed for a [`Source`].

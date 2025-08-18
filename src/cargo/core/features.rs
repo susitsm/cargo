@@ -362,7 +362,7 @@ impl FromStr for Edition {
 }
 
 /// The value for `-Zfix-edition`.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub enum FixEdition {
     /// `-Zfix-edition=start=$INITIAL`
     ///
@@ -794,7 +794,7 @@ macro_rules! unstable_cli_options {
         /// Cargo, like `rustc`, accepts a suite of `-Z` flags which are intended for
         /// gating unstable functionality to Cargo. These flags are only available on
         /// the nightly channel of Cargo.
-        #[derive(Default, Debug, Deserialize)]
+        #[derive(Default, Debug, Deserialize, Clone)]
         #[serde(default, rename_all = "kebab-case")]
         pub struct CliUnstable {
             $(

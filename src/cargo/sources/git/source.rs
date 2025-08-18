@@ -16,16 +16,22 @@ use crate::util::Filesystem;
 use crate::util::GlobalContext;
 use crate::util::cache_lock::CacheLockMode;
 use crate::util::context::GlobalContextSync;
+use crate::util::context::GlobalContextSyncer;
 use crate::util::errors::CargoResult;
 use crate::util::hex::short_hash;
 use crate::util::interning::InternedString;
 use anyhow::Context as _;
 use cargo_util::paths::exclude_from_backups_and_indexing;
+use std::collections::{HashMap, HashSet};
 use std::fmt::{self, Debug, Formatter};
 use std::path::PathBuf;
+use std::sync::TryLockError;
+use std::sync::{Arc, Mutex};
 use std::task::Poll;
 use tracing::trace;
 use url::Url;
+
+use super::utils::GitShortID;
 
 /// `GitSource` contains one or more packages gathering from a Git repository.
 /// Under the hood it uses [`RecursivePathSource`] to discover packages inside the
@@ -71,6 +77,8 @@ use url::Url;
 ///
 /// ["Cargo Home"]: https://doc.rust-lang.org/nightly/cargo/guide/cargo-home.html#directories
 pub struct GitSource<'gctx> {
+    checkout_result: Arc<Mutex<Option<CargoResult<CheckoutResults>>>>,
+    checkout_started: bool,
     /// The git remote which we're going to fetch from.
     remote: GitRemote,
     /// The revision which a git source is locked to.
@@ -120,6 +128,8 @@ impl<'gctx> GitSource<'gctx> {
         );
 
         let source = GitSource {
+            checkout_result: Default::default(),
+            checkout_started: false,
             remote,
             locked_rev,
             source_id,
@@ -158,6 +168,25 @@ impl<'gctx> GitSource<'gctx> {
                 size: None,
             });
         Ok(())
+    }
+}
+
+/// A source that represents one or multiple packages gathered from a given root
+/// path on the filesystem.
+struct CheckoutResults {
+    checkout_path: PathBuf,
+    actual_rev: git2::Oid,
+    short_id: InternedString,
+}
+
+struct GitSourceState<'gctx> {
+    checkout_result: Arc<Mutex<Option<CargoResult<CheckoutResults>>>>,
+    path_source: Option<RecursivePathSource<'gctx>>,
+}
+
+impl<'gctx> GitSourceState<'gctx> {
+    fn ready(&mut self) -> Poll<CargoResult<()>> {
+        todo!()
     }
 }
 
@@ -237,6 +266,155 @@ impl<'gctx> Debug for GitSource<'gctx> {
             },
             Revision::Locked(oid) => write!(f, " ({oid})"),
         }
+    }
+}
+
+struct GitFetcher2 {
+    already_fetched: bool,
+    git_path: PathBuf,
+    remote: GitRemote,
+    locked_rev: Revision,
+    quiet: bool,
+    ident: InternedString,
+    gctx: GlobalContextSyncer,
+    checkout_result: Arc<Mutex<Option<CargoResult<CheckoutResults>>>>,
+}
+
+impl GitFetcher2 {
+    fn new(source: &GitSource<'_>) -> Self {
+        let git_fs = source.gctx.git_path();
+        // Ignore errors creating it, in case this is a read-only filesystem:
+        // perhaps the later operations can succeed anyhow.
+        let _ = git_fs.create_dir();
+        let git_path = source
+            .gctx
+            .assert_package_cache_locked(CacheLockMode::DownloadExclusive, &git_fs);
+        GitFetcher2 {
+            already_fetched: source.path_source.is_some(),
+            git_path: git_path.into(),
+            remote: source.remote.clone(),
+            locked_rev: source.locked_rev.clone(),
+            quiet: source.quiet,
+            ident: source.ident,
+            gctx: source.gctx.sync().with_new_shell(),
+            checkout_result: source.checkout_result.clone(),
+        }
+    }
+
+    fn fetch_on_new_thread(self) {
+        std::thread::spawn(move || {
+            // we must lock here to
+            //   - make sure we poison the mutex on panic
+            //   - avoid locking the mutex multiple times, which could cause races
+            let mut result = self.checkout_result.lock().unwrap();
+            assert!(result.is_none());
+            *result = Some(self.fetch());
+        });
+    }
+
+    fn fetch_blocking(&self) {
+        let mut result = self.checkout_result.lock().unwrap();
+        assert!(result.is_none());
+        *result = Some(self.fetch());
+    }
+
+    fn fetch(&self) -> CargoResult<CheckoutResults> {
+        let git_fs = self.gctx.git_path();
+        // Ignore errors creating it, in case this is a read-only filesystem:
+        // perhaps the later operations can succeed anyhow.
+        let _ = git_fs.create_dir();
+        // this was done in `Self::new`
+        /*
+        let git_path = self
+            .gctx
+            .assert_package_cache_locked(CacheLockMode::DownloadExclusive, &git_fs);
+        */
+        let git_path = &self.git_path;
+
+        // Before getting a checkout, make sure that `<cargo_home>/git` is
+        // marked as excluded from indexing and backups. Older versions of Cargo
+        // didn't do this, so we do it here regardless of whether `<cargo_home>`
+        // exists.
+        //
+        // This does not use `create_dir_all_excluded_from_backups_atomic` for
+        // the same reason: we want to exclude it even if the directory already
+        // exists.
+        exclude_from_backups_and_indexing(&git_path);
+
+        let db_path = self.gctx.git_db_path().join(&self.ident);
+        let db_path = db_path.into_path_unlocked();
+
+        let db = self.remote.db_at(&db_path).ok();
+
+        let (db, actual_rev) = match (&self.locked_rev, db) {
+            // If we have a locked revision, and we have a preexisting database
+            // which has that revision, then no update needs to happen.
+            (Revision::Locked(oid), Some(db)) if db.contains(*oid) => (db, *oid),
+
+            // If we're in offline mode, we're not locked, and we have a
+            // database, then try to resolve our reference with the preexisting
+            // repository.
+            (Revision::Deferred(git_ref), Some(db)) if !self.gctx.network_allowed() => {
+                let offline_flag = self
+                    .gctx
+                    .offline_flag()
+                    .expect("always present when `!network_allowed`");
+                let rev = db.resolve(&git_ref).with_context(|| {
+                    format!(
+                        "failed to lookup reference in preexisting repository, and \
+                         can't check for updates in offline mode ({offline_flag})"
+                    )
+                })?;
+                (db, rev)
+            }
+
+            // ... otherwise we use this state to update the git database. Note
+            // that we still check for being offline here, for example in the
+            // situation that we have a locked revision but the database
+            // doesn't have it.
+            (locked_rev, db) => {
+                if let Some(offline_flag) = self.gctx.offline_flag() {
+                    anyhow::bail!(
+                        "can't checkout from '{}': you are in the offline mode ({offline_flag})",
+                        self.remote.url()
+                    );
+                }
+
+                if !self.quiet {
+                    self.gctx.shell().status(
+                        "Updating",
+                        format!("git repository `{}`", self.remote.url()),
+                    )?;
+                }
+
+                trace!("updating git source `{:?}`", self.remote);
+
+                let locked_rev = locked_rev.clone().into();
+                self.remote
+                    .checkout(&db_path, db, &locked_rev, &self.gctx)?
+            }
+        };
+
+        // Don’t use the full hash, in order to contribute less to reaching the
+        // path length limit on Windows. See
+        // <https://github.com/servo/servo/pull/14397>.
+        let short_id = db.to_short_id(actual_rev)?;
+
+        // Check out `actual_rev` from the database to a scoped location on the
+        // filesystem. This will use hard links and such to ideally make the
+        // checkout operation here pretty fast.
+        let checkout_path = self
+            .gctx
+            .git_checkouts_path()
+            .join(&self.ident)
+            .join(short_id.as_str());
+        let checkout_path = checkout_path.into_path_unlocked();
+        db.copy_to(actual_rev, &checkout_path, &self.gctx)?;
+        Ok(CheckoutResults {
+            checkout_path,
+            actual_rev,
+            short_id: short_id.as_str().into(),
+        })
     }
 }
 
@@ -516,12 +694,97 @@ impl<'gctx> Source for GitSource<'gctx> {
         self.source_id
     }
 
+    fn pend_until_ready(&mut self) -> Poll<CargoResult<()>> {
+        if self.path_source.is_some() {
+            Poll::Ready(self.mark_used())
+        } else {
+            let mut lock = self.checkout_result.try_lock();
+            match &mut lock {
+                Ok(res) => {
+                    match res.take() {
+                        Some(res) => {
+                            self.checkout_started = false;
+                            let res = res?;
+                            let source_id = self
+                                .source_id
+                                .with_git_precise(Some(res.actual_rev.to_string()));
+                            let path_source =
+                                RecursivePathSource::new(&res.checkout_path, source_id, self.gctx);
+
+                            self.path_source = Some(path_source);
+                            self.short_id = Some(res.short_id.as_str().into());
+                            self.locked_rev = Revision::Locked(res.actual_rev);
+                            self.path_source.as_mut().unwrap().load()?;
+
+                            Poll::Ready(self.mark_used())
+                        }
+                        None => {
+                            drop(lock);
+                            // it can happen that pend_until_ready is called again before
+                            // fetch_on_new_thread lock the mutex
+                            if !self.checkout_started {
+                                self.checkout_started = true;
+                                GitFetcher2::new(self).fetch_on_new_thread();
+                            }
+                            Poll::Pending
+                        }
+                    }
+                }
+                Err(TryLockError::Poisoned(p)) => {
+                    panic!("Poisoned: {p}");
+                }
+                Err(TryLockError::WouldBlock) => Poll::Pending,
+            }
+        }
+    }
+
     fn block_until_ready(&mut self) -> CargoResult<()> {
         if self.path_source.is_some() {
-            self.mark_used()?;
-            return Ok(());
+            self.mark_used()
+        } else {
+            let mut lock = self.checkout_result.try_lock();
+            match &mut lock {
+                Ok(res) => match res.take() {
+                    Some(res) => {
+                        self.checkout_started = false;
+                        let res = res?;
+                        let source_id = self
+                            .source_id
+                            .with_git_precise(Some(res.actual_rev.to_string()));
+                        let path_source =
+                            RecursivePathSource::new(&res.checkout_path, source_id, self.gctx);
+
+                        self.path_source = Some(path_source);
+                        self.short_id = Some(res.short_id.as_str().into());
+                        self.locked_rev = Revision::Locked(res.actual_rev);
+                        self.path_source.as_mut().unwrap().load()?;
+
+                        self.mark_used()
+                    }
+                    None => {
+                        drop(lock);
+                        if !self.checkout_started {
+                            self.checkout_started = true;
+                            GitFetcher2::new(self).fetch_blocking();
+                        }
+                        self.block_until_ready()
+                    }
+                },
+                Err(TryLockError::Poisoned(p)) => {
+                    panic!("Poisoned: {p}");
+                }
+                Err(TryLockError::WouldBlock) => {
+                    drop(lock);
+                    match self.checkout_result.lock() {
+                        Ok(_) => (),
+                        Err(err) => panic!("Poisoned: {err}"),
+                    }
+                    self.block_until_ready()
+                }
+            }
         }
 
+        /*
         let git_fs = self.gctx.git_path();
         // Ignore errors creating it, in case this is a read-only filesystem:
         // perhaps the later operations can succeed anyhow.
@@ -622,6 +885,7 @@ impl<'gctx> Source for GitSource<'gctx> {
 
         self.mark_used()?;
         Ok(())
+            */
     }
 
     fn download(&mut self, id: PackageId) -> CargoResult<MaybePackage> {

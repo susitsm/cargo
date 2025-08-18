@@ -164,7 +164,7 @@ pub type GlobalContextSync<'gctx> = &'gctx GlobalContextSyncer;
 #[derive(Debug)]
 pub struct GlobalContextSyncer {
     home_path: Filesystem,
-    shell: Mutex<Shell>,
+    shell: Arc<Mutex<Shell>>,
     cli_config: Option<Vec<String>>,
     cwd: PathBuf,
     search_stop_path: Option<PathBuf>,
@@ -199,6 +199,30 @@ where
 }
 
 impl GlobalContextSyncer {
+    pub fn with_new_shell(&self) -> Self {
+        Self {
+            home_path: self.home_path.clone(),
+            shell: self.shell.clone(),
+            cli_config: self.cli_config.clone(),
+            cwd: self.cwd.clone(),
+            search_stop_path: self.search_stop_path.clone(),
+            extra_verbose: self.extra_verbose,
+            frozen: self.frozen,
+            locked: self.locked,
+            offline: self.offline,
+            jobserver: self.jobserver.clone(),
+            unstable_flags: self.unstable_flags.clone(),
+            unstable_flags_cli: self.unstable_flags_cli.clone(),
+            cache_rustc_info: self.cache_rustc_info,
+            creation_time: self.creation_time.clone(),
+            target_dir: self.target_dir.clone(),
+            progress_config: self.progress_config.clone(),
+            env: self.env.clone(),
+            net_config: self.net_config.clone(),
+            http_config: self.http_config.clone(),
+        }
+    }
+
     /// Gets a reference to the shell, e.g., for writing error messages.
     pub fn shell(&self) -> MutexGuard<'_, Shell> {
         self.shell.lock().unwrap()
@@ -431,7 +455,7 @@ impl GlobalContext {
         GlobalContext {
             sync: GlobalContextSyncer {
                 home_path: Filesystem::new(homedir),
-                shell: Mutex::new(shell),
+                shell: Arc::new(Mutex::new(shell)),
                 cwd,
                 search_stop_path: None,
                 cli_config: None,
@@ -2785,7 +2809,7 @@ pub fn save_credentials(
     }
 }
 
-#[derive(Debug, Default, Deserialize, PartialEq)]
+#[derive(Debug, Default, Deserialize, PartialEq, Clone)]
 #[serde(rename_all = "kebab-case")]
 pub struct CargoHttpConfig {
     pub proxy: Option<String>,
@@ -2864,7 +2888,7 @@ pub struct SslVersionConfigRange {
     pub max: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct CargoNetConfig {
     pub retry: Option<u32>,
@@ -2873,7 +2897,7 @@ pub struct CargoNetConfig {
     pub ssh: Option<CargoSshConfig>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct CargoSshConfig {
     pub known_hosts: Option<Vec<Value<String>>>,
@@ -3042,7 +3066,7 @@ pub struct TermConfig {
     pub progress: Option<ProgressConfig>,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, Clone)]
 #[serde(rename_all = "kebab-case")]
 pub struct ProgressConfig {
     #[serde(default)]
@@ -3052,7 +3076,7 @@ pub struct ProgressConfig {
     pub term_integration: Option<bool>,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, Clone)]
 #[serde(rename_all = "kebab-case")]
 pub enum ProgressWhen {
     #[default]
