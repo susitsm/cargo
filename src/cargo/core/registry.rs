@@ -276,14 +276,30 @@ impl<'gctx> PackageRegistry<'gctx> {
         // However it improves error messages for sources that issue errors
         // in `block_until_ready` because the callers here have context about
         // which deps are being resolved.
-        self.block_until_ready()?;
-        Ok(())
+        self.block_until_ready()
+    }
+
+    fn poll_ensure_loaded(&mut self, namespace: SourceId, kind: Kind) -> Poll<CargoResult<()>> {
+        if self.ensure_loaded_without_blocking(namespace, kind)? {
+            return Poll::Ready(Ok(()));
+        }
+
+        debug!("Ensure loaded {}", namespace);
+        // This isn't strictly necessary since it will be called later.
+        // However it improves error messages for sources that issue errors
+        // in `block_until_ready` because the callers here have context about
+        // which deps are being resolved.
+        self.sources.get_mut(namespace).unwrap().pend_until_ready()
     }
 
     pub fn add_sources(&mut self, ids: impl IntoIterator<Item = SourceId>) -> CargoResult<()> {
-        for id in ids {
-            self.ensure_loaded(id, Kind::Locked)?;
+        let mut block_until_ready = Vec::new();
+        for source_id in ids {
+            if !self.ensure_loaded_without_blocking(source_id, Kind::Normal)? {
+                block_until_ready.push(source_id);
+            }
         }
+        self.block_until_sources_ready(block_until_ready)?;
         Ok(())
     }
 
@@ -409,13 +425,23 @@ impl<'gctx> PackageRegistry<'gctx> {
                 // Go straight to the source for resolving `dep`. Load it as we
                 // normally would and then ask it directly for the list of summaries
                 // corresponding to this `dep`.
-                self.ensure_loaded(dep.source_id(), Kind::Normal)
-                    .with_context(|| {
-                        format!(
-                            "failed to load source for dependency `{}`",
-                            dep.package_name()
-                        )
+                let loaded = self
+                    .poll_ensure_loaded(dep.source_id(), Kind::Normal)
+                    .map(|err| {
+                        err.with_context(|| {
+                            format!(
+                                "failed to load source for dependency `{}`",
+                                dep.package_name()
+                            )
+                        })
                     })?;
+                match loaded {
+                    Poll::Ready(()) => (),
+                    Poll::Pending => {
+                        patch_deps_pending.push(patch_dep_remaining);
+                        continue;
+                    }
+                }
 
                 let source = self
                     .sources
@@ -828,12 +854,15 @@ impl<'gctx> Registry for PackageRegistry<'gctx> {
         }
 
         // Ensure the requested source_id is loaded
-        self.ensure_loaded(dep.source_id(), Kind::Normal)
-            .with_context(|| {
-                format!(
-                    "failed to load source for dependency `{}`",
-                    dep.package_name()
-                )
+        let _ = self
+            .poll_ensure_loaded(dep.source_id(), Kind::Normal)
+            .map(|res| {
+                res.with_context(|| {
+                    format!(
+                        "failed to load source for dependency `{}`",
+                        dep.package_name()
+                    )
+                })
             })?;
 
         let source = self.sources.get_mut(dep.source_id());
