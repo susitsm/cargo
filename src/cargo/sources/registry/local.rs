@@ -154,6 +154,10 @@ impl<'gctx> RegistryData for LocalRegistry<'gctx> {
         Ok(())
     }
 
+    fn pend_until_ready(&mut self) -> Poll<CargoResult<()>> {
+        Poll::Ready(self.block_until_ready())
+    }
+
     fn invalidate_cache(&mut self) {
         // Local registry has no cache - just reads from disk.
     }

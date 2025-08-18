@@ -830,6 +830,10 @@ impl<'gctx> RegistryData for HttpRegistry<'gctx> {
             }
         }
     }
+
+    fn pend_until_ready(&mut self) -> Poll<CargoResult<()>> {
+        Poll::Ready(self.block_until_ready())
+    }
 }
 
 impl<'gctx> Downloads<'gctx> {

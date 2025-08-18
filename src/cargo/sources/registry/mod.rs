@@ -425,6 +425,8 @@ pub trait RegistryData {
 
     /// Block until all outstanding `Poll::Pending` requests are `Poll::Ready`.
     fn block_until_ready(&mut self) -> CargoResult<()>;
+
+    fn pend_until_ready(&mut self) -> Poll<CargoResult<()>>;
 }
 
 /// The status of [`RegistryData::download`] which indicates if a `.crate`
@@ -971,6 +973,25 @@ impl<'gctx> Source for RegistrySource<'gctx> {
         exclude_from_backups_and_indexing(&registry_base.into_path_unlocked());
 
         self.ops.block_until_ready()
+    }
+
+    fn pend_until_ready(&mut self) -> Poll<CargoResult<()>> {
+        // Before starting to work on the registry, make sure that
+        // `<cargo_home>/registry` is marked as excluded from indexing and
+        // backups. Older versions of Cargo didn't do this, so we do it here
+        // regardless of whether `<cargo_home>` exists.
+        //
+        // This does not use `create_dir_all_excluded_from_backups_atomic` for
+        // the same reason: we want to exclude it even if the directory already
+        // exists.
+        //
+        // IO errors in creating and marking it are ignored, e.g. in case we're on a
+        // read-only filesystem.
+        let registry_base = self.gctx.registry_base_path();
+        let _ = registry_base.create_dir();
+        exclude_from_backups_and_indexing(&registry_base.into_path_unlocked());
+
+        self.ops.pend_until_ready()
     }
 }
 
